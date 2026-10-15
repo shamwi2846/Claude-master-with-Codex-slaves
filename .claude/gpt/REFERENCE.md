@@ -1,0 +1,59 @@
+# gpt.js reference (read when you need the details; the rules live in ~/.claude/CLAUDE.md)
+
+`gpt.js` = `node "C:/Users/Shari/.claude/gpt/gpt.js"`. Run `gpt.js` with no arguments for the full usage list.
+
+## Reviews
+- **First round:** `review --task "<goal + user requirements + acceptance criteria>" [--focus ".."] [--files a,b] [--full] [--evidence "<cmd> ;; <cmd>" | --evidence-file <out>]`
+  - `--files` limits what is reviewed and acknowledged.
+  - `--full` does a whole-file audit; it's automatic when nothing changed.
+- **Follow-up:** `review --followup <log.md> --file <response.md> [--fresh]`. It resumes GPT's session, so it's fast. Unaddressed findings come back marked OPEN.
+- **MQL5 evidence:** `--evidence 'node "C:/Users/Shari/.claude/gpt/gpt.js" mql5-compile "<file.mq5>"'`. Keep the inner quotes.
+- **Close out:** `mark-reviewed --by claude-final|claude-fallback|user-declined --files "<exact files>" --note "<why>"`. Always pass `--files`; without it, every pending file and open finding in the project is cleared.
+- **Exit codes:**
+  - `0` ok
+  - `3` GPT_UNAVAILABLE (after one retry; usage limits start a 15-minute cooldown, override with `--force-gpt`)
+  - `4` MAX_ROUNDS_REACHED
+  - `5` apply conflict
+  - `6` DUPLICATE: an identical review is already running, so wait for it
+
+## Other helpers (all read-only, no test runs)
+- **Ideas:** `idea --file <draft.md> --question "<user question>"`
+- **Plans:** `plan --file <plan.md>`. Needed before ExitPlanMode; a light revision (at least 80% identical lines, within 30 minutes) reuses the review.
+- **Heavy reading:** `digest --question ".." --files ..|--dir ..`
+- **Debugging:** `digest --investigate --question "<symptom>" --files/--dir .. --expected ".." --actual ".." --tried "<failed fixes>" [--evidence-file f]`. The answer gives DIAGNOSIS, EVIDENCE [code|runtime], NEXT CHECK, FIX IDEA and CONFIDENCE. Read the cited code yourself and run the NEXT CHECK before fixing.
+- **Backtests:** `digest --backtest --question ".." --files "<tester/optimization report>"`. Verdicts: QUESTIONABLE, LIKELY_OVERFIT, INSUFFICIENT_EVIDENCE or NO_RED_FLAGS.
+- **Web research:** `research --question ".."`, with sources.
+- **Test cases:** `testplan --task "<what the code must do>" [--files ..]`. GPT lists edge cases and expected results; Claude writes the tests.
+
+## Documents (GPT writes, Claude reviews)
+1. **Write:** `write --files "<exact doc paths>" --brief-file <brief.md>`. The brief covers the session facts, audience, what to change and keep, and acceptance criteria.
+2. **Review:** check the printed diff for facts, requirements, formatting and invented features. Open binary documents directly.
+3. **Finish with one of:**
+   - `apply <id>`: refuses if the original changed
+   - `write --revise <id> --brief-file <feedback.md>`: at most 3 rounds
+   - `discard <id>`
+4. **Refused targets:**
+   - config files (`.set`, `.ini`, `.json`, `.yaml`, `requirements.txt`)
+   - agent files (`CLAUDE.md`, `AGENTS.md`, `skills/`)
+   - tool folders (`.claude/`, `.github/`)
+   - data files that code reads (`--data` only if no code reads them)
+
+## Computer use
+- **Delegate:** `computer --task "<goal, app, what to report back>"`. Never retried automatically; check the app's state before another run.
+- **Claude doing it itself:** only after `allow-claude-cu --reason ".."`, which opens a 30-minute window.
+- **One operator at a time, across all projects:**
+  - A second `computer` run exits `BUSY` (6).
+  - Claude's own computer-use tools are refused while a GPT run owns the desktop.
+  - A GPT run is refused within 2 minutes of Claude's last desktop action.
+
+## Maintenance
+- `doctor [--live]` checks the setup (config, Codex, git, PowerShell, hook registration, problems the hooks survived — `logs/hooks.log`).
+- `stats [--all]` shows speed, tokens, verdicts, how review findings were settled (withdrawn = false alarm) and hook latency.
+- `lesson [--text ".." | --remove N]` manages project lessons.
+- `status` shows pending changes, open findings, the last review, config problems and partial shell tracking.
+- **After changing the setup itself:** `node ~/.claude/gpt/tests/run.js` runs the regression checks (no GPT calls);
+  `node ~/.claude/gpt/tests/release.js` checks syntax and config, runs them, then copies the setup to the backup folder (`--backup <dir>` or `GPT_BACKUP_DIR`) with a `RELEASE.txt` manifest.
+
+## Configuration
+- **Per-project overrides** go in `<project>/.claude/gpt.json`, e.g. `{"review": false, "plans": true, "ideas": true, "computerUse": "gpt", "effort": "auto"}`.
+- **Model, timeouts, thresholds and the MetaEditor path** are set in `~/.claude/gpt/config.json`. Invalid values fall back to their defaults (`lib.js` CONFIG_DEFAULTS) and are reported by `doctor` and `status`; unknown or invalid `gpt.json` values are ignored and listed by `status`.

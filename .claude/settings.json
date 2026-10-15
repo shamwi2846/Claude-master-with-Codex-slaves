@@ -1,0 +1,128 @@
+{
+  "env": {
+    "CLAUDE_CODE_AUTO_COMPACT_WINDOW": "1000000"
+  },
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write|MultiEdit|NotebookEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"C:/Users/Shari/.claude/gpt/gate.js\" post-edit",
+            "timeout": 15
+          }
+        ]
+      },
+      {
+        "matcher": "Bash|PowerShell",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"C:/Users/Shari/.claude/gpt/gate.js\" post-bash",
+            "timeout": 15
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "ExitPlanMode",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"C:/Users/Shari/.claude/gpt/gate.js\" pre-plan",
+            "timeout": 15
+          }
+        ]
+      },
+      {
+        "matcher": "mcp__computer-use__.*|mcp__remote-devices__computer.*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"C:/Users/Shari/.claude/gpt/gate.js\" pre-computer",
+            "timeout": 15,
+            "onFailure": "block"
+          }
+        ]
+      },
+      {
+        "matcher": "Edit|Write|MultiEdit|NotebookEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"C:/Users/Shari/.claude/gpt/gate.js\" pre-edit",
+            "timeout": 15
+          }
+        ]
+      },
+      {
+        "matcher": "Bash|PowerShell",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"C:/Users/Shari/.claude/gpt/gate.js\" pre-bash",
+            "timeout": 15
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"C:/Users/Shari/.claude/gpt/gate.js\" stop",
+            "timeout": 30
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"C:/Users/Shari/.claude/gpt/gate.js\" prompt",
+            "timeout": 15
+          }
+        ]
+      }
+    ],
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"C:/Users/Shari/.claude/gpt/gate.js\" session",
+            "timeout": 30
+          }
+        ]
+      }
+    ]
+  },
+  "enableWorkflows": true,
+  "enabledPlugins": {
+    "slopornot@slopornot": true
+  },
+  "extraKnownMarketplaces": {
+    "claude-plugins-official": {
+      "source": {
+        "source": "github",
+        "repo": "anthropics/claude-plugins-official"
+      }
+    },
+    "slopornot": {
+      "source": {
+        "source": "directory",
+        "path": "C:\\Users\\Shari\\Desktop\\slopornot-main"
+      }
+    }
+  },
+  "tui": "fullscreen",
+  "theme": "auto",
+  "inputNeededNotifEnabled": true,
+  "agentPushNotifEnabled": true,
+  "autoUpdatesChannel": "latest"
+}

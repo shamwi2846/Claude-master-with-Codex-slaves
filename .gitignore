@@ -1,0 +1,4 @@
+# release.js working folders (the previous release is kept locally only)
+.claude.prev/
+.candidate/
+node_modules/

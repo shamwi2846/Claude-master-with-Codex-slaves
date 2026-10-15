@@ -1,0 +1,642 @@
+// Claude Code hook handler. Usage: node gate.js <post-edit|stop|pre-plan|pre-computer|prompt>
+// Must never crash or hang Claude: every path exits 0, and errors fail open.
+// The project root for hooks is exactly the session cwd (gpt.js resolves to the same tracked root).
+const path = require('path');
+const L = require('./lib');
+
+// Derived from this file's location, so a restored copy works under any user folder.
+const GPT = `node "${path.join(__dirname, 'gpt.js').replace(/\\/g, '/')}"`;
+
+function readInput() {
+  try { return JSON.parse(require('fs').readFileSync(0, 'utf8') || '{}'); } catch { return {}; }
+}
+// Every exit records how long the hook took (`gpt.js stats` shows it).
+const EVENT = process.argv[2], T0 = Date.now();
+function out(obj) {
+  if (obj) process.stdout.write(JSON.stringify(obj));
+  L.hookTime(EVENT, Date.now() - T0);
+  process.exit(0);
+}
+// A failure a hook survives (it fails open) still leaves a trace for `gpt.js doctor`.
+function survived(where, e) { L.hookIssue(`${EVENT}: ${where}`, (e && e.message) || e); }
+function deny(reason) {
+  out({ hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: reason } });
+}
+// The session's fixed project folder (not the current `cd` location), cached per process.
+let rootCache;
+const rootOf = inp => rootCache || (rootCache = L.sessionRoot(inp.session_id, inp.cwd));
+
+// Record (once per tool) which input fields Claude Code really sends, so `gpt.js doctor` can flag a
+// mismatch with the fields these hooks rely on (e.g. after a Claude Code update).
+function noteFields(inp) {
+  try {
+    const tool = inp.tool_name || inp.hook_event_name;
+    if (!tool) return;
+    // Recorded immediately if a required field is missing in THIS input; otherwise refreshed weekly.
+    const fields = Object.keys(inp.tool_input || inp).sort();
+    const missing = (L.HOOK_FIELDS[tool] || []).some(f => !fields.includes(f));
+    const g = L.readState(L.HOME);
+    if (!missing && g.seenFields && g.seenFields[tool] && Date.now() - ((g.seenFieldsAt || {})[tool] || 0) < 7 * 86400000) return;
+    L.updateState(L.HOME, s => {
+      s.seenFields = s.seenFields || {}; s.seenFieldsAt = s.seenFieldsAt || {};
+      s.seenFields[tool] = fields; s.seenFieldsAt[tool] = Date.now();
+    });
+  } catch {}
+}
+
+// Live gpt.js reviews in this project's state (dead entries pruned in place). Only this project's:
+// a review's result is recorded in the state it runs under, which the session root keeps identical.
+function liveRunning(s) {
+  const alive = r => { try { process.kill(r.pid, 0); return true; } catch { return false; } };
+  const out = [];
+  for (const [k, r] of Object.entries(s.running || {})) { if (alive(r)) out.push(r); else delete s.running[k]; }
+  return out;
+}
+
+// The record for a change made outside Edit/Write (shell, disk, git): a new pending version that counts
+// as a full change and keeps what must survive — the pending size/sensitivity/diff base/commit, the review
+// time, the baseline's review time and open findings. `commit` overrides the kept commit details.
+function outsideChange(c, pending, cfg, { abs, at, deleted = false, via = 'viaDisk', commit }) {
+  return {
+    lines: Math.max(pending ? c.lines : 0, cfg.minChangedLines),
+    sensitive: deleted || (pending && c.sensitive) || L.SENSITIVE_PATH.test(abs),
+    at, [via]: true, shellTouched: true, basePre: !!(pending && c.basePre), deleted, reviewedAt: c && c.reviewedAt,
+    ...(commit || L.keepCommit(c, pending)),
+    ...(c && c.baseAt ? { baseAt: c.baseAt } : {}),
+    ...(c && c.openFindings ? { openFindings: c.openFindings } : {}),
+  };
+}
+
+// The file holds exactly the version a review acknowledged at or after `since` (this turn's window, or the
+// start of a shell command) — e.g. a review that finished while the command ran. An OLDER reviewed version
+// doesn't count: putting it back over the owner's newer edits is a change that needs review.
+function reviewedAsIs(root, abs, c, since) {
+  return !!c && (c.baseAt || 0) >= (since || 0) && L.sameAsBaseline(root, abs);
+}
+
+// Time of a change whose file time is unreliable (e.g. a copy that kept its source's time) or that has
+// none (a deletion): "now" — unless a live review already froze exactly this content (a deleted file
+// hashes as 'absent', as frozen); then that review's freeze time, so its result acknowledges the change
+// instead of leaving it pending.
+function contentTime(s, abs, now) {
+  let h; try { h = L.fileHash(abs); } catch { return now; }
+  const k = path.resolve(abs).toLowerCase();
+  for (const r of liveRunning(s)) {
+    const i = (r.files || []).indexOf(k);
+    if (i >= 0 && r.hashes && r.hashes[i] === h) return Math.min(r.cutoff, now);
+  }
+  return now;
+}
+
+// Record code changes made on disk during the current turn but not through Edit/Write (shell edits,
+// deletions, commits created in the turn) as pending changes. Called at Stop, and by the prompt hook
+// BEFORE it starts a new turn — so an interrupting user message can't erase the turn's discovery window.
+// The slow git scan runs outside the state lock; only this turn counts, so the user's own uncommitted
+// work never triggers a review.
+// `ctx` (prompt hook) shares the git status and walk it already fetched.
+function absorbTurnChanges(root, cfg, ctx = {}) {
+  const snap = L.readState(root);
+  if (!snap.turnStartedAt) return;
+  const prints = L.readTurnPrints(root, snap.turnStartedAt);
+  ctx.turnHead = snap.turnHead;
+  let disk = L.gitChangedCode(root, snap.turnStartedAt, snap.turnBaselineDeleted, prints, ctx);
+  // Bulk rule: many NEW untracked files (copy, extract, generator) are not flagged one by one;
+  // modified or deleted tracked files always are.
+  // (Sensitive files, e.g. .set presets or risk/order code, are always kept.)
+  if (disk.filter(d => d.untracked).length > (cfg.bulkShellFiles || 15)) disk = disk.filter(d => !d.untracked || L.isSensitiveFile(d.abs));
+  // Edit + `git commit` in one shell command no longer shows in git status: take commits the local user
+  // CREATED during the turn (branch switches and pulls don't count — see gitCommittedSince).
+  if (L.gitRoot(root)) { // turnHead may be null in a brand-new repo
+    const byAbs = new Map(disk.map(d => [d.abs.toLowerCase(), d]));
+    const dirty = new Map(Object.entries((prints && prints.dirty) || {}).map(([k, v]) => [k.toLowerCase(), v]));
+    const deletedAtStart = new Set((snap.turnBaselineDeleted || []).map(f => require('path').resolve(f).toLowerCase()));
+    for (const d of L.gitCommittedSince(root, snap.turnHead, snap.turnStartedAt)) {
+      const k = d.abs.toLowerCase();
+      // changed again after its commit: the review must still diff from before the commit
+      if (byAbs.has(k)) { byAbs.get(k).committed = true; continue; }
+      // a deletion that already existed at turn start, now only committed: not a change of this turn
+      if (d.deleted && deletedAtStart.has(k)) { disk.push({ ...d, commitOnly: true }); continue; }
+      let byContent = false;
+      if (prints && !d.deleted) {
+        const was = dirty.get(k);
+        // Committed exactly as it was at turn start (e.g. the user's own work): not a change of this turn —
+        // but a still-pending earlier change of it keeps a diff base from before this commit.
+        if (was && was === L.printOf(d.abs)) { disk.push({ ...d, commitOnly: true }); continue; }
+        if (d.mtime <= snap.turnStartedAt) {
+          // Old file time: clean at turn start, it counts only if it differs from the turn-start revision
+          // (reflog times have 1 s resolution, so a commit made just before the turn can be listed).
+          if (!dirty.has(k) && !L.differsFromRev(root, snap.turnHead, d.abs)) continue;
+          byContent = !dirty.has(k) || !!was; // dirty at turn start but not hashed: file-time rule
+        }
+      }
+      disk.push({ ...d, byContent });
+    }
+  }
+  if (!disk.length) return;
+  L.updateState(root, s => {
+    const now = Date.now();
+    for (const { abs: found, deleted, mtime, committed, byContent, commitOnly } of disk) {
+      const abs = L.changeKey(s, found);
+      const c = s.changes[abs];
+      const reviewed = L.reviewedAtFor(s, c);
+      const isPending = c && c.at > reviewed;
+      // A newly observed deletion, or a disk modification newer than both the tracked change and the
+      // last review, becomes a NEW change version that an earlier-started review cannot acknowledge.
+      // A change found by content (old file time) is new unless it is exactly the last reviewed version;
+      // on a pending record it is re-recorded too (it may be bigger than the pending edit, and newer than
+      // what a running review froze).
+      const timeNew = !deleted && mtime > Math.max(c ? c.at : 0, reviewed);
+      // file time not after the last change/review, yet different from the reviewed version: a copy that
+      // kept an older time (e.g. one reviewed preset copied over another)
+      const contentNew = !deleted && !byContent && !timeNew && !!c && !isPending && !reviewedAsIs(root, abs, c, snap.turnStartedAt);
+      const fresh = commitOnly ? false
+        : deleted ? !(c && c.deleted)
+        : byContent ? isPending || !reviewedAsIs(root, abs, c, snap.turnStartedAt)
+        : timeNew || contentNew;
+      if (!fresh) {
+        // a pending change committed later in the turn: its review diffs from the turn-start revision
+        if (committed && isPending && !c.committed) Object.assign(c, { committed: true, sinceRev: snap.turnHead || null });
+        continue;
+      }
+      s.changes[abs] = outsideChange(c, isPending, cfg, {
+        abs, deleted,
+        // A modification is dated by its file time, so a review that froze the file after the edit can
+        // still acknowledge it; a deletion, or a change whose file time is unreliable, gets "now" (or the
+        // cutoff of a running review that froze exactly this state).
+        at: deleted || byContent || contentNew ? contentTime(s, abs, now) : Math.min(mtime, now),
+        // committed during the turn: review diffs it against the revision the turn started from
+        // a commit found now starts from this turn's revision; an older pending commit keeps its earlier base
+        commit: isPending && c.committed ? L.keepCommit(c, true) : committed ? { committed: true, sinceRev: snap.turnHead || null } : {},
+      });
+    }
+  });
+}
+
+// Start a turn's discovery window: changes on disk from now on count as this turn's. First save what the
+// outgoing window changed (if no Stop ended it — e.g. the user interrupted); the same git status then
+// fingerprints the new starting point. `carry`: a continuation of the same user turn (not a new user
+// request): the user turn (userTurnAt — once-per-turn Stop blocks, same-turn plan review) stays.
+function startWindow(root, ps, carry) {
+  const startedAt = Date.now();
+  const ctx = ps.review ? { entries: L.gitStatus(root) } : null;
+  const prev = L.readState(root);
+  const ended = prev.turnClosedAt && prev.turnClosedAt >= (prev.turnStartedAt || 0); // Stop already absorbed it
+  // A background job that may write files keeps working after the Stop: its changes are absorbed too.
+  const bgWriter = prev.turnStartedAt && prev.bgWriterTurn === prev.turnStartedAt;
+  if (ctx && (!ended || bgWriter)) try { absorbTurnChanges(root, L.loadConfig(), ctx); } catch (e) { survived('absorb', e); }
+  const deleted = L.gitDeleted(root);
+  const head = L.gitHead(root);
+  if (ctx && ctx.entries) try { L.saveTurnPrints(root, startedAt, ctx); } catch (e) { survived('fingerprints', e); }
+  L.updateState(root, s => {
+    s.turnStartedAt = startedAt;
+    if (!carry || !s.userTurnAt) s.userTurnAt = startedAt;
+    s.turnBaselineDeleted = deleted;
+    s.turnHead = head; // commits made during the turn are found from here
+    // A file marked deleted that exists again was restored outside the hooks' view: a later deletion
+    // of it is a new change.
+    for (const [f, c] of Object.entries(s.changes || {})) if (c.deleted && require('fs').existsSync(f)) c.deleted = false;
+    delete s.stopBlockedFor; // fields of an older version of these hooks
+    delete s.findingsBlockedFor;
+  });
+}
+
+// A background shell command that may write files (anything but a read-only GPT run).
+const READONLY_GPT = /[\\/]gpt\.js["']?\s+(review|plan|idea|digest|research|testplan|status|stats|doctor)\b/i;
+
+const handlers = {
+  'post-edit'(inp) {
+    const ti = inp.tool_input || {};
+    const file = ti.file_path || ti.notebook_path;
+    if (!file) return out();
+    const abs = path.resolve(inp.cwd || '.', file);
+    if (!L.isCode(abs)) return out();
+    // Non-bulk edits are counted here; replace_all edits are counted by pre-edit (occurrences x lines).
+    const plain = inp.tool_name === 'MultiEdit' ? (ti.edits || []).filter(e => !e.replace_all)
+      : inp.tool_name === 'Edit' && !ti.replace_all ? [ti] : [];
+    let added = '', removed = '', lines = 0;
+    if (inp.tool_name === 'Write') { added = ti.content || ''; lines = L.countLines(added); }
+    else if (inp.tool_name === 'NotebookEdit') { added = ti.new_source || ''; lines = L.countLines(added); }
+    else {
+      const all = inp.tool_name === 'MultiEdit' ? (ti.edits || []) : [ti];
+      added = all.map(e => e.new_string || '').join('\n');
+      removed = all.map(e => e.old_string || '').join('\n');
+      lines = plain.reduce((n, e) => n + Math.max(L.countLines(e.new_string || ''), L.countLines(e.old_string || '')), 0);
+    }
+    // Removing a sensitive operation (e.g. an OrderSend or auth check) is as sensitive as adding one, and
+    // any edit inside a file that contains one (a lot-size line in an EA that calls OrderSend elsewhere).
+    const sensitive = L.SENSITIVE_CONTENT.test(added) || L.SENSITIVE_CONTENT.test(removed) || L.isSensitiveFile(abs);
+    const hash = L.printOf(abs); // content after this edit: a later edit can tell if something else changed it
+    L.updateState(rootOf(inp), s => {
+      const rec = L.changeKey(s, abs);
+      const c = s.changes[rec];
+      // What THIS call's pre-edit captured (keyed by file + tool_use_id; leftovers of failed calls are
+      // never picked up and expire).
+      const key = `${abs}|${inp.tool_use_id || 'x'}`;
+      const pre = s.preWrite && s.preWrite[key];
+      if (pre) delete s.preWrite[key];
+      const prev = c && c.at > L.reviewedAtFor(s, c) ? c : { lines: 0, sensitive: false };
+      // Write/NotebookEdit: whichever is bigger, the old or the new text. Bulk edits: added on top.
+      const counted = !pre ? lines : pre.kind === 'bulk' ? lines + pre.lines : Math.max(lines, pre.lines);
+      s.changes[rec] = {
+        lines: prev.lines + counted,
+        sensitive: prev.sensitive || sensitive || !!(pre && pre.sensitive),
+        at: Date.now(), reviewedAt: c && c.reviewedAt, hash,
+        ...(prev.shellTouched ? { shellTouched: true } : {}),
+        // basePre: the saved baseline predates every pending change (a fresh change here starts one).
+        basePre: prev.lines === 0 && !prev.shellTouched ? true : !!prev.basePre,
+        ...L.keepCommit(prev, prev.lines > 0), // a pending commit keeps its diff base
+        ...(c && c.baseAt ? { baseAt: c.baseAt } : {}), // which review set the current baseline
+        // Open GPT findings survive edits: only a follow-up review or an explicit acceptance clears them.
+        ...(c && c.openFindings ? { openFindings: c.openFindings } : {}),
+      };
+    });
+    return out();
+  },
+
+  // Before Edit/Write/MultiEdit touches a code file: save its baseline (version before Claude's first
+  // edit since the last review) for exact review diffs. For Write, also remember how big/sensitive the
+  // old content was, so replacing e.g. a large auth module with one harmless line still counts.
+  'pre-edit'(inp) {
+    const ti = inp.tool_input || {};
+    const file = ti.file_path || ti.notebook_path;
+    if (!file) return out();
+    const abs = path.resolve(inp.cwd || '.', file);
+    if (!L.isCode(abs)) return out();
+    try {
+      const s = L.readState(rootOf(inp));
+      const c = s.changes && s.changes[L.changeKey(s, abs)];
+      const pending = c && c.at > L.reviewedAtFor(s, c);
+      // Changed during this turn but not by Edit/Write (a shell command, not yet seen by Stop's scan)?
+      let mtime = 0;
+      try { mtime = require('fs').statSync(abs).mtimeMs; } catch {}
+      // Already pending from an edit, but the file no longer holds what that edit left: something else
+      // (a shell command) changed it in between — count it as a full change, not just the edits.
+      if (pending && c.hash && L.printOf(abs) !== c.hash) {
+        const cfg = L.loadConfig();
+        L.updateState(rootOf(inp), st => {
+          const cc = st.changes[L.changeKey(st, abs)];
+          if (!cc) return;
+          Object.assign(cc, { lines: Math.max(cc.lines || 0, cfg.minChangedLines), shellTouched: true, at: Date.now() });
+          delete cc.hash;
+        });
+      }
+      // Newer than the turn start, or (file time kept by a copy) different from the turn-start content —
+      // and not simply the last reviewed version.
+      const byContent = !pending && s.turnStartedAt && mtime > 0 && mtime <= s.turnStartedAt
+        && L.changedByContentThisTurn(rootOf(inp), abs, s.turnStartedAt, s.turnHead);
+      const shellBefore = !pending && s.turnStartedAt && (mtime > s.turnStartedAt || byContent) && !reviewedAsIs(rootOf(inp), abs, c, s.turnStartedAt);
+      if (shellBefore) {
+        // Record that change now (otherwise this edit's baseline would silently absorb it).
+        const cfg = L.loadConfig();
+        L.updateState(rootOf(inp), st => {
+          const k = L.changeKey(st, abs);
+          st.changes[k] = outsideChange(st.changes[k], false, cfg, { abs, at: byContent ? contentTime(st, abs, Date.now()) : Math.min(mtime, Date.now()) });
+        });
+      }
+      // A file already changed outside Edit/Write has no trustworthy "before" version: don't capture its
+      // current content as the baseline (review then uses git or reads the whole file).
+      const untrusted = shellBefore || (pending && c.shellTouched && !L.baselineOf(rootOf(inp), abs));
+      if (!untrusted) L.captureBaseline(rootOf(inp), abs, !pending);
+    } catch (e) { survived('baseline', e); }
+    // replace_all edits (Edit, or any MultiEdit entry) change every occurrence, not just one.
+    const bulkEdits = inp.tool_name === 'Edit' ? (ti.replace_all && ti.old_string ? [ti] : [])
+      : inp.tool_name === 'MultiEdit' ? (ti.edits || []).filter(e => e.replace_all && e.old_string) : [];
+    if (inp.tool_name !== 'Write' && inp.tool_name !== 'NotebookEdit' && !bulkEdits.length) return out();
+    let old;
+    try {
+      old = require('fs').readFileSync(abs, 'utf8');
+      if (bulkEdits.length) {
+        // stand-in text with (occurrences x lines per occurrence) lines, keeping each old_string for the
+        // sensitivity check (also correct when deleting with "")
+        old = bulkEdits.map(e => {
+          const n = Math.max(old.split(e.old_string).length - 1, 1);
+          const per = Math.max(L.countLines(e.old_string), L.countLines(e.new_string || ''));
+          return e.old_string + '\n'.repeat(Math.max(n * per - L.countLines(e.old_string), 0));
+        }).join('\n');
+      } else if (inp.tool_name === 'NotebookEdit') { // only the cell being replaced/deleted matters
+        const cell = (JSON.parse(old).cells || []).find(x => x.id === ti.cell_id);
+        if (!cell || ti.edit_mode === 'insert') return out();
+        old = [].concat(cell.source || []).join('');
+      }
+    } catch { return out(); }
+    L.updateState(rootOf(inp), s => {
+      s.preWrite = s.preWrite || {};
+      // One snapshot per tool call (file + tool_use_id): a call that fails never fires post-edit, so its
+      // snapshot is never charged to another edit; stale ones expire after 10 minutes.
+      for (const [k, v] of Object.entries(s.preWrite)) if (!v.at || Date.now() - v.at > 10 * 60000) delete s.preWrite[k];
+      s.preWrite[`${abs}|${inp.tool_use_id || 'x'}`] = {
+        lines: L.countLines(old), sensitive: L.SENSITIVE_CONTENT.test(old),
+        kind: bulkEdits.length ? 'bulk' : 'replace', at: Date.now(),
+      };
+    });
+    return out();
+  },
+
+  // Shell commands: fingerprint files before and compare after, so edits and deletions made through
+  // Bash/PowerShell are tracked too. Always this setup's own files (hooks, bridge, settings — a project's
+  // scans never see them). Non-git folders: every code file (`walk`, which also finds new files). In a huge
+  // folder (walk cut off at 5000 entries) only the files reached are compared — new files elsewhere can't
+  // be told apart from the cut-off, so that partial coverage is recorded for `gpt.js status`. Git folders
+  // (Stop's scan covers what git status shows): git-ignored config and Claude/Codex settings.
+  'pre-bash'(inp) {
+    const root = rootOf(inp);
+    if (!L.projectSettings(root).review) return out();
+    let paths = L.globalSetupFiles(), stats = null, all = true, walk = false;
+    if (L.gitRoot(root)) paths = paths.concat(L.watchedIgnored(root, L.readState(root).turnStartedAt));
+    else {
+      const snap = L.codeSnapshot(root, 5000, true);
+      stats = snap.files; all = Object.keys(snap.files).length <= 1000;
+      paths = paths.concat(Object.keys(snap.files));
+      walk = !snap.truncated;
+      if (snap.truncated) {
+        const st = L.readState(root);
+        if (!st.shellScanPartial || Date.now() - st.shellScanPartial.at > 86400000) {
+          L.updateState(root, s => { s.shellScanPartial = { at: Date.now(), files: Object.keys(snap.files).length }; });
+        }
+      }
+    }
+    const files = L.shellPrints([...new Set(paths)], stats, all);
+    require('fs').writeFileSync(`${L.statePath(root)}.bash-${inp.tool_use_id || 'x'}.json`, JSON.stringify({ at: Date.now(), walk, all, files }));
+    return out();
+  },
+
+  'post-bash'(inp) {
+    const root = rootOf(inp);
+    const fs = require('fs');
+    const ti = inp.tool_input || {};
+    // A background command keeps running after this hook: remember that this turn started a possible
+    // writer, so a later notification keeps the turn's discovery window open (see the prompt hook).
+    if (ti.run_in_background && !READONLY_GPT.test(String(ti.command || ''))) {
+      try { L.updateState(root, s => { s.bgWriterTurn = s.turnStartedAt; }); } catch (e) { survived('background writer', e); }
+    }
+    const f = `${L.statePath(root)}.bash-${inp.tool_use_id || 'x'}.json`;
+    let snapBefore;
+    try { snapBefore = JSON.parse(fs.readFileSync(f, 'utf8')); fs.rmSync(f, { force: true }); } catch { return out(); }
+    if (!snapBefore || !snapBefore.files) return out(); // written by an older version of this hook
+    const before = snapBefore.files;
+    let after;
+    // same file set rule and hashing policy as the first snapshot, so untouched files compare equal
+    const walk = snapBefore.walk !== undefined ? snapBefore.walk : !snapBefore.git; // (older snapshot format)
+    if (!walk) after = L.shellPrints(Object.keys(before), null, snapBefore.all !== false);
+    else {
+      const snap = L.codeSnapshot(root, 5000, true);
+      after = L.shellPrints([...new Set(L.globalSetupFiles().concat(Object.keys(snap.files)))], snap.files, snapBefore.all);
+    }
+    const cfg = L.loadConfig();
+    const created = Object.keys(after).filter(p => after[p] && !before[p]);
+    let changed = Object.keys(after).filter(p => after[p] && before[p] && after[p].f !== before[p].f).map(p => ({ p, deleted: false }))
+      .concat(Object.keys(before).filter(p => before[p] && !after[p] && !fs.existsSync(p)).map(p => ({ p, deleted: true })));
+    // Many NEW files from one command = copy/extract/clone/generate, not hand-written code: skip those
+    // (noted for `gpt.js status`). Modified or deleted existing files are always tracked (a shell
+    // refactor across many files still needs review).
+    if (created.length > (cfg.bulkShellFiles || 15)) {
+      L.updateState(root, s => { s.lastBulkShell = { at: Date.now(), files: created.length, command: String((inp.tool_input || {}).command || '').slice(0, 200) }; });
+      // sensitive new files (.set presets, risk/order code) are still tracked individually
+      changed = changed.concat(created.filter(p => L.isSensitiveFile(p)).map(p => ({ p, deleted: false })));
+    } else changed = changed.concat(created.map(p => ({ p, deleted: false })));
+    if (!changed.length) return out();
+    L.updateState(root, s => {
+      for (const { p: found, deleted } of changed) {
+        const rec = L.changeKey(s, found), p = found;
+        const c = s.changes[rec];
+        const reviewed = L.reviewedAtFor(s, c);
+        const pending = c && c.at > reviewed;
+        // file time unreliable: not after the last review, or not after its own previous time (a copy that
+        // kept its source's time)
+        const oldTime = !deleted && (after[p].m <= reviewed || (before[p] && after[p].m <= before[p].m));
+        // Content identical to the version a review acknowledged while this command ran: not a new change.
+        if (oldTime && !pending && reviewedAsIs(root, p, c, snapBefore.at)) continue;
+        s.changes[rec] = outsideChange(c, pending, cfg, {
+          abs: p, deleted, via: 'viaShell',
+          // dated by the file time, so a review frozen after the change can still acknowledge it — unless
+          // that time is unreliable (cp -p, restored backups): then the content changed now, so it is a NEW
+          // version that an older review can't cover (unless a running review froze exactly this content,
+          // also for a deletion)
+          at: deleted || oldTime ? contentTime(s, p, Date.now()) : Math.min(after[p].m, Date.now()),
+        });
+      }
+    });
+    return out();
+  },
+
+  stop(inp) {
+    const cfg = L.loadConfig();
+    const root = rootOf(inp);
+    if (!L.projectSettings(root).review) return out();
+    // Damaged state: nothing can be tracked or blocked — say so (once per Stop) instead of a silent "all clear".
+    const s0 = L.readState(root);
+    if (s0._unreadable) return out({ systemMessage: `GPT review tracking is OFF for ${path.basename(root)}: ${L.statePath(root)} is unreadable (${s0._unreadable}), so unreviewed changes are unknown. Move that file aside (tracking restarts) and review your changes with ${GPT} review --files "...".` });
+    absorbTurnChanges(root, cfg);
+    const res = L.updateState(root, s => {
+      // Edits that were reverted (content equals the pre-edit baseline again) are no change at all.
+      // (Only the pending change is cleared; open findings stay until resolved or accepted.)
+      for (const [f, c] of L.pending(s)) {
+        // Changed outside Edit/Write: compare only if the saved baseline predates ALL pending changes.
+        if (c.shellTouched && !c.basePre) continue;
+        const base = L.baselineOf(root, f);
+        // Judge by the file system now (a deleted file may have been restored since).
+        const exists = require('fs').existsSync(f);
+        let same = false; // created then deleted again = absent before and after
+        try { same = base === 'ABSENT' ? !exists : !!base && exists && L.fileHash(base) === L.fileHash(f); } catch {}
+        if (same) { c.reviewedAt = Math.max(c.reviewedAt || 0, c.at); if (exists) c.deleted = false; }
+      }
+      // A live gpt.js review that froze these exact change versions is already handling them.
+      const running = liveRunning(s);
+      // ...unless the file changed after it was frozen in a way that kept its recorded time (e.g. a copy
+      // that preserved an older time): then it is a newer version that review can't acknowledge.
+      for (const [f, c] of L.pending(s)) {
+        const k = path.resolve(f).toLowerCase();
+        const covering = running.filter(r => r.cutoff >= c.at && r.hashes && (r.files || []).includes(k));
+        if (!covering.length) continue;
+        let h; try { h = L.fileHash(f); } catch { continue; }
+        // newer than every covering review's frozen copy (one matching review is enough to cover it)
+        if (!covering.some(r => r.hashes[r.files.indexOf(k)] === h)) c.at = Date.now();
+      }
+      const allPending = L.pending(s);
+      const coveredByRunning = ([f, c]) => running.some(r => r.cutoff >= c.at && r.files.includes(f.toLowerCase()));
+      // Each kind of block is raised at most once per user turn, and both go out in ONE message.
+      // Open findings on a file a running review (e.g. the follow-up) already covers wait for its result.
+      const open = Object.entries(s.changes).filter(e => e[1].openFindings && e[1].at <= L.reviewedAtFor(s, e[1]) && !coveredByRunning(e));
+      // Strictly once per user turn per block kind (owner: never block my work); after that, only a note.
+      const turn = s.userTurnAt || s.turnStartedAt || 0;
+      const findings = open.length && s.findingsBlockedTurn !== turn ? open : null;
+      if (findings) s.findingsBlockedTurn = turn;
+      // Changes a running review already covers neither block nor count toward significance.
+      const list = allPending.filter(e => !coveredByRunning(e));
+      let pendingList = null, warn = 0;
+      if (list.length && L.isSignificant(list, cfg)) {
+        if (s.stopBlockedTurn === turn) warn = list.length; else { s.stopBlockedTurn = turn; pendingList = list; }
+      }
+      if (!findings && !pendingList) {
+        // The turn ends here: its discovery window closes, so edits the user makes before the next prompt
+        // are never attributed to it (the prompt hook only absorbs turns that ended without a Stop).
+        s.turnClosedAt = Date.now();
+        return warn ? { warn } : null;
+      }
+      return { findings, list: pendingList, unavailable: L.minutesAgo(s.gptUnavailableAt, cfg.unavailableCooldownMinutes), why: s.gptUnavailableReason };
+    });
+    if (!res) return out();
+    if (res.warn) return out({ systemMessage: `GPT review still pending for ${res.warn} changed file(s) in ${path.basename(root)}.` });
+    const P = `--project "${root}"`;
+    const parts = [];
+    if (res.findings) {
+      const logs = [...new Set(res.findings.flatMap(([, c]) => [].concat(c.openFindings)))];
+      const files = res.findings.map(([f]) => f);
+      parts.push(`Open GPT findings (${logs.join(', ')}) on: ${files.join(', ')}. Fix + follow-up review, or accept: ${GPT} mark-reviewed ${P} --by claude-final --files "${files.join(',')}" --note "<why>".`);
+    }
+    if (res.list) {
+      const files = res.list.map(([f, c]) => `  - ${f} (${c.deleted ? 'DELETED' : `~${c.lines} lines`}${c.sensitive ? ', SENSITIVE' : ''})`).join('\n');
+      const how = res.unavailable
+        ? `GPT failed recently (${String(res.why || 'unknown').slice(0, 120)}). Try once: ${GPT} review ${P} --task "<goal>"; if it fails again use the fallback-reviewer agent, then mark-reviewed --by claude-fallback --files "..." and tell the user.`
+        : `Run (background): ${GPT} review ${P} --task "<goal + user requirements>".`;
+      parts.push(`GPT review needed — unreviewed changes:\n${files}\n${how}\nFinal-round fixes: mark-reviewed ${P} --by claude-final --files "..." --note "...". User declined: --by user-declined.`);
+    }
+    return out({ decision: 'block', reason: parts.join('\n\n') + '\nPausing mid-task or waiting on the user? Say so in one line and stop.' });
+  },
+
+  'pre-plan'(inp) {
+    const cfg = L.loadConfig();
+    const root = rootOf(inp);
+    if (!L.projectSettings(root).plans) return out();
+    const s = L.readState(root);
+    const fresh = L.minutesAgo(s.planReviewedAt, cfg.planReviewValidMinutes);
+    const presented = (inp.tool_input || {}).plan;
+    if (presented) {
+      // Plan text available: it must be the reviewed plan or a light revision of it (>= 80% identical
+      // lines) — whichever turn the review ran in.
+      if (fresh && L.textSimilarity(presented, s.planReviewedText) >= 0.8) return out();
+    } else if (fresh && s.planReviewedTurn && s.planReviewedTurn === (s.userTurnAt || s.turnStartedAt)) {
+      // No plan text from Claude Code: accept a review started in this same turn.
+      return out();
+    }
+    if (L.minutesAgo(s.gptUnavailableAt, cfg.unavailableCooldownMinutes)) return out();
+    return deny(`Plans must be reviewed by GPT before presenting them. Save the plan to a temp file and run: ${GPT} plan --project "${root}" --file <plan.md>  (run_in_background). Weigh GPT's points, revise the plan (you make the final call), mention notable GPT input in the plan, then call ExitPlanMode again.`);
+  },
+
+  // The one hook that fails CLOSED: any unexpected error while checking desktop ownership denies the tool
+  // (fail-open here could let Claude and GPT drive the same desktop).
+  'pre-computer'(inp) {
+    try { return computerGate(inp); } catch (e) {
+      survived('ownership check', e);
+      return deny(`Desktop ownership could not be checked (${e.message}). Retry in a moment; if it persists run ${GPT} doctor.`);
+    }
+  },
+};
+
+// Everything here finishes well inside the hook's 15-s timeout (a timed-out hook would let the tool run;
+// the registration also says onFailure: block): no waiting writes before the ownership step, which itself
+// waits at most until DESKTOP_DEADLINE.
+const DESKTOP_DEADLINE = T0 + 10000;
+function computerGate(inp) {
+    const cfg = L.loadConfig(false); // (no Codex discovery: it can take seconds)
+    // read-only project lookup (sessionRoot may wait to record a new session)
+    const root = L.knownSessionRoot(inp.session_id) || path.resolve(inp.cwd || '.');
+    const g = L.readState(L.HOME); // global (cross-project) computer-use state
+    // One operator at a time. Claude's use is allowed only through ONE locked step that checks that no
+    // GPT computer run (bridge or its Codex worker) owns the desktop and records Claude's use — so a GPT
+    // run can't slip in between the check and the record.
+    // Another Claude session that used the desktop in the last 2 minutes also owns it.
+    const sid = inp.session_id || 'unknown';
+    const allow = () => {
+      const r = L.updateState(L.HOME, s => {
+        const o = s.computerLock;
+        if (o && (L.pidAlive(o.pid) || L.pidAlive(o.childPid))) return o;
+        if (s.claudeCuSession && s.claudeCuSession !== sid && Date.now() - (s.claudeCuLastUse || 0) < 120000) return { claude: true };
+        s.claudeCuLastUse = Date.now(); s.claudeCuSession = sid;
+      }, true, Math.max(0, DESKTOP_DEADLINE - Date.now()));
+      if (r && r.lockFailed) return deny('Desktop ownership could not be checked right now (state busy). Retry in a moment.');
+      if (r && r.claude) return deny('Another Claude session is operating the desktop (last action < 2 min ago). Wait for it to finish, then retry.');
+      if (r) return deny(`GPT is operating the desktop right now (${r.project}). Wait for that run to finish, then retry.`);
+      return out();
+    };
+    if (L.projectSettings(root).computerUse === 'claude') return allow();
+    if ((g.claudeCuUntil || 0) > Date.now()) return allow();
+    if (L.minutesAgo(g.gptUnavailableAt, cfg.unavailableCooldownMinutes)) return allow();
+    return deny(`Computer use is delegated to GPT. First check whether files/logs/CLI/API/browser tools can do it instead (e.g. MT5 logs and tester reports are files). If computer use is really needed, run: ${GPT} computer --task "<precise goal, app name, what to report back>" (run_in_background). ` +
+      `Only if delegating is clearly worse here (tight see-act loop with your own edits, GPT already failed this task, or the user asked you personally) run: ${GPT} allow-claude-cu --reason "<why>" and retry.`);
+}
+
+Object.assign(handlers, {
+  // Session start: surface setup problems early (cached for an hour) and show the project's lessons.
+  session(inp) {
+    const root = rootOf(inp);
+    const msgs = [];
+    const g = L.readState(L.HOME);
+    let failed = g.doctorFailed || [];
+    // Re-check hourly, and immediately after Codex was updated (its entry file changed).
+    let codexStamp = '';
+    try { codexStamp = String(require('fs').statSync(L.loadConfig().codexJs).mtimeMs); } catch {}
+    if (!g.doctorAt || Date.now() - g.doctorAt > 3600000 || g.doctorCodexStamp !== codexStamp) {
+      failed = L.quickChecks().filter(c => !c.ok).map(c => `${c.name}: ${c.info}`);
+      L.updateState(L.HOME, s => { s.doctorAt = Date.now(); s.doctorFailed = failed; s.doctorCodexStamp = codexStamp; });
+    }
+    if (failed.length) msgs.push(`[GPT setup problem] ${failed.join('; ')}. GPT calls may fail; run: ${GPT} doctor --live, and tell the user.`);
+    const lessons = L.readLessons(root);
+    if (lessons.length) msgs.push(`[Project lessons — confirmed past mistakes in this project; avoid repeating them]\n${lessons.join('\n')}`);
+    try { L.cleanup(); } catch (e) { survived('cleanup', e); }
+    if (!msgs.length) return out();
+    return out({ hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext: msgs.join('\n') } });
+  },
+
+  prompt(inp) {
+    const root = rootOf(inp);
+    const ps = L.projectSettings(root);
+    const p = String(inp.prompt || '');
+    // Automatic messages (background-task notifications, system reminders) are not a new user request:
+    // no reminders, and no new turn (otherwise every notification re-arms the Stop blocks).
+    if (/^\s*(<task-notification>|<system-reminder>|<cross-session-message|\[SYSTEM NOTIFICATION|\[MESSAGE FROM NON-USER SOURCE|\[Cross-session (delivery|idle) notice\])/i.test(p)) {
+      // A notification that re-activates a turn which already ended: if that turn started nothing in the
+      // background that could write files (only read-only GPT runs), open a fresh discovery window, so
+      // edits the user made after the turn ended aren't taken for Claude's. Otherwise keep the window: a
+      // background job's own changes are only visible there.
+      if (ps.review) try {
+        const s0 = L.readState(root);
+        if (s0.turnClosedAt && s0.turnClosedAt >= (s0.turnStartedAt || 0) && s0.bgWriterTurn !== s0.turnStartedAt) startWindow(root, ps, true);
+      } catch (e) { survived('continuation', e); }
+      return out();
+    }
+    startWindow(root, ps, false);
+    const msgs = [];
+    if (ps.ideas && /\b(plan|plans|planning|idea|ideas|suggest|suggestions?|advice|advise|recommend\w*|should (i|we)|approach|architect\w*|design|brainstorm|strategy|better way|improve\w*|opinion|what do you think|pros and cons|trade-?offs?)\b/i.test(p)) {
+      msgs.push(`[GPT consult] This request may call for plans/ideas/recommendations. If your answer will contain substantive ones, get a second opinion first: ${GPT} idea --file <draft.md> (or plan). You make the final call; mention useful GPT input. Skip for trivial answers.`);
+    }
+    if (/\b(computer use|screen|click|desktop app|metatrader|mt5|mt4|terminal window|gui)\b/i.test(p) && ps.computerUse !== 'claude') {
+      msgs.push(`[Computer use] Prefer files/logs/CLI/APIs first. If screen control is needed, delegate to GPT: ${GPT} computer --task "...".`);
+    }
+    if (/\b(readme|document\w*|docs?|guide|report|write-?up|manual|proposal|presentation|slides?|changelog|word file|docx)\b/i.test(p)) {
+      msgs.push(`[GPT writer] Medium/long document work goes to GPT: ${GPT} write --files "<exact doc paths>" --brief-file <brief.md>, then review the diff and apply/revise/discard. Small edits: do them yourself.`);
+    }
+    if (/\b(logs?|journal|tester|backtest|report|stack ?trace|build output|errors?|crash\w*|why (is|does|did)|not working|failing|fails?)\b/i.test(p)) {
+      msgs.push(`[GPT digest] Large logs/reports/build output: let GPT read them first — ${GPT} digest --question "..." --files "<paths>" — then read only the lines it cites.`);
+    }
+    // Each reminder type at most once per session: the rules are already in CLAUDE.md, so repeating
+    // them on every matching prompt only costs Claude tokens.
+    let fresh = msgs;
+    if (inp.session_id && msgs.length) {
+      fresh = L.updateState(L.HOME, g => {
+        g.reminders = g.reminders || {};
+        for (const [sid, r] of Object.entries(g.reminders)) if (Date.now() - r.at > 2 * 86400000) delete g.reminders[sid];
+        const r = g.reminders[inp.session_id] = g.reminders[inp.session_id] || { at: Date.now(), shown: [] };
+        const kind = m => m.slice(0, m.indexOf(']') + 1);
+        const show = msgs.filter(m => !r.shown.includes(kind(m)));
+        r.shown.push(...show.map(kind));
+        return show;
+      }) || msgs;
+    }
+    if (!fresh.length) return out();
+    return out({ hookSpecificOutput: { hookEventName: 'UserPromptSubmit', additionalContext: fresh.join('\n') } });
+  },
+});
+
+try {
+  handlers['pre-write'] = handlers['pre-edit']; // older settings.json used this name
+  const h = handlers[process.argv[2]];
+  if (!h) out();
+  const input = readInput();
+  if (EVENT !== 'pre-computer') noteFields(input); // (its state write could wait; the desktop check must not)
+  h(input);
+} catch (e) {
+  survived('error', e);
+  process.stderr.write('gpt gate error (ignored): ' + e.message + '\n');
+  process.exit(0);
+}
