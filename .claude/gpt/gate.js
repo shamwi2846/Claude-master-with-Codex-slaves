@@ -107,7 +107,18 @@ const ignoredIn = (ps, s, abs) => {
   return !(c && (c.at > L.reviewedAtFor(s, c) || c.openFindings));
 };
 const ignoredNow = (root, abs) => { const s = L.readState(root); return ignoredIn(ignoreRules(root, s, [abs]), s, abs); };
-const isSetupFile = abs => L.globalSetupFiles().some(x => x.toLowerCase() === path.resolve(abs).toLowerCase());
+// This setup's files: its global files and a project's .claude/gpt.json (the setup's per-project switches).
+const isSetupFile = abs => /[\\/]\.claude[\\/]gpt\.json$/i.test(abs) || L.globalSetupFiles().some(x => x.toLowerCase() === path.resolve(abs).toLowerCase());
+// A file's content print: its hash, 'absent', or null (too big or unreadable: unknown).
+const contentPrint = p => (require('fs').existsSync(p) ? L.printOf(p) : 'absent');
+// A setup file another session wrote through Edit/Write since `since` (see post-edit): that session's
+// change, tracked and reviewed there — only if the file still holds exactly that write AND this session's
+// window began from content that session's writes started from (`start`), so a change made here before
+// that write (which its baseline then contains) is never skipped.
+const otherSessionWrite = (writes, p, sid, since, start) => {
+  const w = writes[p.toLowerCase()];
+  return w && start && w.sid !== (sid || '') && w.at >= since && (w.from || []).includes(start) && w.hash === L.printOf(p) ? w : null;
+};
 // Git probes for not-authored checks end by this time, and recording after them waits at most until
 // RECORD_DEADLINE for the state lock: together they stay inside the 15-s hook timeout.
 const PROBE_DEADLINE = T0 + 6000, RECORD_DEADLINE = T0 + 13500;
@@ -128,11 +139,11 @@ function shellSkips(root, inp, snap, before, after, changed, repoTops, created) 
   const ign = ignoreRules(root, s, changed.map(x => x.p));
   if (ign) for (const { p } of changed) if (L.ignoredByProject(ign, p)) skip.set(p.toLowerCase(), 'ignored');
   const writes = L.readState(L.HOME).setupWrites || {};
-  for (const { p, deleted } of changed) {
-    const w = writes[p.toLowerCase()];
-    if (!deleted && w && w.sid !== (inp.session_id || '') && w.at >= snap.at && w.hash === L.printOf(p)) skip.set(p.toLowerCase(), `written by another session (${w.sid})`);
-  }
   const hashOf = fp => (fp && String(fp.f).split('|')[2]) || null;
+  for (const { p, deleted } of changed) {
+    const w = !deleted && otherSessionWrite(writes, p, inp.session_id, snap.at, before[p] ? hashOf(before[p]) : 'absent');
+    if (w) skip.set(p.toLowerCase(), `written by another session (${w.sid})`);
+  }
   const unreviewed = new Set(L.pending(s).map(([f]) => f.toLowerCase()));
   const known = new Set(Object.entries(before).filter(([p, v]) => v && !unreviewed.has(p.toLowerCase())).map(([, v]) => hashOf(v)).filter(Boolean));
   for (const { p, deleted } of changed) {
@@ -219,6 +230,23 @@ function absorbTurnChanges(root, cfg, ctx = {}) {
   // Not tracked: files on the project's ignore list, and changes the turn didn't author (copies, moves).
   const ign = ignoreRules(root, snap, disk.map(d => d.abs));
   if (ign) disk = disk.filter(d => !ignoredIn(ign, snap, d.abs));
+  // A setup file another session wrote during this turn (e.g. this project's .claude/gpt.json, written from
+  // another chat): reviewed in that session, not counted here.
+  const writes = L.readState(L.HOME).setupWrites || {};
+  const lower = o => new Map(Object.entries(o || {}).map(([k, v]) => [k.toLowerCase(), v]));
+  const dirtyAt = lower(prints && prints.dirty), confsAt = lower(prints && prints.configs);
+  // The file's content at the turn start: as fingerprinted then (changed in git, or git-ignored config the
+  // walk saw), else as in the turn-start commit — 'absent' if not there and not git-ignored (an untracked
+  // file would have been fingerprinted); null = unknown (never skipped).
+  const startOf = p => {
+    const k = p.toLowerCase();
+    if (!prints) return null;
+    if (dirtyAt.has(k)) return dirtyAt.get(k);
+    if (confsAt.has(k)) return confsAt.get(k);
+    const inRev = L.revPrint(root, snap.turnHead, p);
+    return inRev !== 'absent' ? inRev : L.gitIgnored(root, [p]).has(k) ? null : 'absent';
+  };
+  disk = disk.filter(d => d.deleted || !writes[d.abs.toLowerCase()] || !otherSessionWrite(writes, d.abs, ctx.sid, snap.turnStartedAt, startOf(d.abs)));
   if (!disk.length) return;
   const notAuthored = L.gitNotAuthored(root, [...new Set(scanned.concat(disk))].filter(d => !d.commitOnly), prints, PROBE_DEADLINE);
   L.updateState(root, s => {
@@ -268,9 +296,9 @@ function absorbTurnChanges(root, cfg, ctx = {}) {
 // outgoing window changed (if no Stop ended it — e.g. the user interrupted); the same git status then
 // fingerprints the new starting point. `carry`: a continuation of the same user turn (not a new user
 // request): the user turn (userTurnAt — once-per-turn Stop blocks, same-turn plan review) stays.
-function startWindow(root, ps, carry) {
+function startWindow(root, ps, carry, sid) {
   const startedAt = Date.now();
-  const ctx = ps.review ? { entries: L.gitStatus(root) } : null;
+  const ctx = ps.review ? { entries: L.gitStatus(root), sid } : null;
   const prev = L.readState(root);
   const ended = prev.turnClosedAt && prev.turnClosedAt >= (prev.turnStartedAt || 0); // Stop already absorbed it
   // A background job that may write files keeps working after the Stop: its changes are absorbed too.
@@ -319,6 +347,7 @@ const handlers = {
     // any edit inside a file that contains one (a lot-size line in an EA that calls OrderSend elsewhere).
     const sensitive = L.SENSITIVE_CONTENT.test(added) || L.SENSITIVE_CONTENT.test(removed) || L.isSensitiveFile(abs);
     const hash = L.printOf(abs); // content after this edit: a later edit can tell if something else changed it
+    let setupBefore = null; // a setup file's content before this call (pre-edit)
     L.updateState(rootOf(inp), s => {
       const rec = L.changeKey(s, abs);
       const c = s.changes[rec];
@@ -327,6 +356,8 @@ const handlers = {
       const key = `${abs}|${inp.tool_use_id || 'x'}`;
       const pre = s.preWrite && s.preWrite[key];
       if (pre) delete s.preWrite[key];
+      const sp = s.setupPre && s.setupPre[key];
+      if (sp) { delete s.setupPre[key]; setupBefore = sp.before; }
       const prev = c && c.at > L.reviewedAtFor(s, c) ? c : { lines: 0, sensitive: false };
       // Write/NotebookEdit: whichever is bigger, the old or the new text. Bulk edits: added on top.
       const counted = !pre ? lines : pre.kind === 'bulk' ? lines + pre.lines : Math.max(lines, pre.lines);
@@ -343,25 +374,28 @@ const handlers = {
         ...(c && c.openFindings ? { openFindings: c.openFindings } : {}),
       };
     });
-    // This setup's own file written here: another session's shell command running meanwhile must not take
-    // this write for its own change (see shellSkips). Registered only when the file holds what this tool
-    // wrote (Write: exactly its content; Edit: every replacement text), so bytes someone else wrote in
-    // between are never registered as this session's — and only in a project that reviews its changes
-    // (whatever this session's record holds is then reviewed here).
+    // This setup's own file written here: another session must not take this write for its own change
+    // (see otherSessionWrite). Registered only when the file holds what this tool wrote (Write: exactly its
+    // content; Edit: every replacement text, and the content changed — an Edit that only deletes has no
+    // replacement text) and its content before the call is known — and only in a project that reviews its
+    // changes (whatever this session's record holds is then reviewed here, diffed from a baseline taken
+    // before this call). `from`: the contents this session's consecutive writes started from.
     let wrote = false;
     try {
       const now = require('fs').readFileSync(abs);
       if (inp.tool_name === 'Write') wrote = typeof ti.content === 'string' && now.equals(Buffer.from(ti.content, 'utf8'));
       else if (inp.tool_name === 'Edit' || inp.tool_name === 'MultiEdit') {
         const text = now.toString('utf8'), news = (inp.tool_name === 'Edit' ? [ti] : ti.edits || []).map(e => e.new_string || '').filter(Boolean);
-        wrote = news.length > 0 && news.every(n => text.includes(n));
+        wrote = news.every(n => text.includes(n)) && hash !== setupBefore;
       }
     } catch {}
-    if (wrote && isSetupFile(abs) && L.projectSettings(rootOf(inp)).review) try {
+    if (wrote && hash && setupBefore && isSetupFile(abs) && L.projectSettings(rootOf(inp)).review) try {
       L.updateState(L.HOME, g => {
         const w = g.setupWrites = g.setupWrites || {};
         for (const [k, v] of Object.entries(w)) if (Date.now() - v.at > 86400000) delete w[k];
-        w[abs.toLowerCase()] = { sid: inp.session_id || '', hash, at: Date.now() };
+        const k = abs.toLowerCase(), sid = inp.session_id || '', old = w[k];
+        const from = old && old.sid === sid && old.hash === setupBefore ? (old.from || []).concat(setupBefore).slice(-20) : [setupBefore];
+        w[k] = { sid, hash, from, at: Date.now() };
       });
     } catch (e) { survived('setup write', e); }
     return out();
@@ -413,6 +447,16 @@ const handlers = {
       const untrusted = shellBefore || (pending && c.shellTouched && !L.baselineOf(rootOf(inp), abs));
       if (!untrusted) L.captureBaseline(rootOf(inp), abs, !pending);
     } catch (e) { survived('baseline', e); }
+    // This setup's own file: its content before this call, for post-edit's setup-write record (another
+    // session skips the write only if its window began from this content — see otherSessionWrite).
+    if (isSetupFile(abs)) try {
+      const before = contentPrint(abs);
+      L.updateState(rootOf(inp), s => {
+        s.setupPre = s.setupPre || {};
+        for (const [k, v] of Object.entries(s.setupPre)) if (!v.at || Date.now() - v.at > 10 * 60000) delete s.setupPre[k];
+        s.setupPre[`${abs}|${inp.tool_use_id || 'x'}`] = { before, at: Date.now() };
+      });
+    } catch (e) { survived('setup write', e); }
     // replace_all edits (Edit, or any MultiEdit entry) change every occurrence, not just one.
     const bulkEdits = inp.tool_name === 'Edit' ? (ti.replace_all && ti.old_string ? [ti] : [])
       : inp.tool_name === 'MultiEdit' ? (ti.edits || []).filter(e => e.replace_all && e.old_string) : [];
@@ -552,7 +596,7 @@ const handlers = {
     // Damaged state: nothing can be tracked or blocked — say so (once per Stop) instead of a silent "all clear".
     const s0 = L.readState(root);
     if (s0._unreadable) return out({ systemMessage: `GPT review tracking is OFF for ${path.basename(root)}: ${L.statePath(root)} is unreadable (${s0._unreadable}), so unreviewed changes are unknown. Move that file aside (tracking restarts) and review your changes with ${GPT} review --files "...".` });
-    absorbTurnChanges(root, cfg);
+    absorbTurnChanges(root, cfg, { sid: inp.session_id });
     const res = L.updateState(root, s => {
       // Edits that were reverted (content equals the pre-edit baseline again) are no change at all.
       // (Only the pending change is cleared; open findings stay until resolved or accepted.)
@@ -724,11 +768,11 @@ Object.assign(handlers, {
       // background job's own changes are only visible there.
       if (ps.review) try {
         const s0 = L.readState(root);
-        if (s0.turnClosedAt && s0.turnClosedAt >= (s0.turnStartedAt || 0) && s0.bgWriterTurn !== s0.turnStartedAt) startWindow(root, ps, true);
+        if (s0.turnClosedAt && s0.turnClosedAt >= (s0.turnStartedAt || 0) && s0.bgWriterTurn !== s0.turnStartedAt) startWindow(root, ps, true, inp.session_id);
       } catch (e) { survived('continuation', e); }
       return out();
     }
-    startWindow(root, ps, false);
+    startWindow(root, ps, false, inp.session_id);
     const msgs = [];
     if (ps.ideas && /\b(plan|plans|planning|idea|ideas|suggest|suggestions?|advice|advise|recommend\w*|should (i|we)|approach|architect\w*|design|brainstorm|strategy|better way|improve\w*|opinion|what do you think|pros and cons|trade-?offs?)\b/i.test(p)) {
       msgs.push(`[GPT consult] This request may call for plans/ideas/recommendations. If your answer will contain substantive ones, get a second opinion first: ${GPT} idea --file <draft.md> (or plan). You make the final call; mention useful GPT input. Skip for trivial answers.`);

@@ -15,7 +15,7 @@
 //   gpt.js write    [--effort ..] --files "<a.md,b.docx>" --brief "..." | --brief-file f  [--data]
 //   gpt.js write    --revise <stage-id> --brief-file <feedback.md>      (Claude's review feedback)
 //   gpt.js apply <stage-id> [--force]  |  gpt.js discard <stage-id>
-//   gpt.js note <log.md> --text "..." | --file f        (append Claude's decisions to a log)
+//   gpt.js note [<log.md>] --text "..." | --file f      (append Claude's decisions to a log; default: the latest)
 //   gpt.js mark-reviewed --by claude-final|claude-fallback|user-declined [--files a,b] --note "..."
 //   gpt.js allow-claude-cu --reason "<why Claude does computer use itself>" [--minutes N]
 //   gpt.js lesson [--text "..." | --remove N]    (list / add / remove project lessons)

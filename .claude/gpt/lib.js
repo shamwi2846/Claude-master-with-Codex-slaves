@@ -627,6 +627,21 @@ function changeKey(s, abs) {
 
 // A file's content differs from its version in commit `rev` (compared as git blobs, so git's filters such
 // as line endings apply), tracked or not. Not in `rev`, no revision, or a git error: "differs".
+// A file's content print in a commit, as a checkout writes it (eol and filters applied, so it compares with
+// printOf of the working file): its hash, 'absent' if the commit doesn't hold it (or there is no commit
+// yet), null if unknown (not a git project, too big, git failed).
+function revPrint(root, rev, abs) {
+  const top = gitRoot(root);
+  if (!top) return null;
+  if (!rev) return 'absent';
+  try {
+    const rel = path.relative(top, abs).replace(/\\/g, '/');
+    const r = spawnSync('git', ['cat-file', '--filters', `${rev}:${rel}`], { cwd: top, timeout: 8000, maxBuffer: PRINT_MAX_BYTES + 1 });
+    if (r.status === 0) return crypto.createHash('sha256').update(r.stdout).digest('hex');
+    return spawnSync('git', ['rev-parse', '-q', '--verify', `${rev}:${rel}`], { cwd: top, timeout: 8000 }).status === 1 ? 'absent' : null;
+  } catch { return null; }
+}
+
 function differsFromRev(root, rev, abs) {
   const top = rev && gitRoot(root);
   if (!top) return true;
@@ -1099,6 +1114,6 @@ module.exports = {
   HOME, STATE_DIR, LOG_DIR, loadConfig, slug, gitRoot, readState, writeState, updateState, findRoot,
   projectSettings, isCode, countLines, pending, reviewedAtFor, isSignificant, gitStatus, gitDeleted, gitChangedCode, minutesAgo,
   SENSITIVE_PATH, SENSITIVE_CONTENT, docTargetProblem, fileHash,
-  codeSnapshot, statePath, pidAlive, isSensitiveFile, keepCommit, printOf, saveTurnPrints, readTurnPrints, changedByContentThisTurn, validateConfig, CONFIG_DEFAULTS, hookIssue, hookTime, recentHookIssues, HOOK_TIMES, sameAsBaseline, differsFromRev, shellPrints, watchedIgnored, globalSetupFiles, changeKey, gitHead, gitCommittedSince, sessionRoot, knownSessionRoot, captureBaseline, setBaseline, baselineOf, lessonsFile, readLessons, quickChecks, cleanup, textSimilarity, HOOK_FIELDS,
+  codeSnapshot, statePath, pidAlive, isSensitiveFile, keepCommit, printOf, saveTurnPrints, readTurnPrints, changedByContentThisTurn, validateConfig, CONFIG_DEFAULTS, hookIssue, hookTime, recentHookIssues, HOOK_TIMES, sameAsBaseline, differsFromRev, revPrint, gitIgnored, shellPrints, watchedIgnored, globalSetupFiles, changeKey, gitHead, gitCommittedSince, sessionRoot, knownSessionRoot, captureBaseline, setBaseline, baselineOf, lessonsFile, readLessons, quickChecks, cleanup, textSimilarity, HOOK_FIELDS,
   REVIEWABLE_CONFIG, ignoredByProject, gitNotAuthored, repoStates, branchSwitch, noteNotAuthored, shareReceipt, pendingAnywhere,
 };

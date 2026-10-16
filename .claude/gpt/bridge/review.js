@@ -334,6 +334,14 @@ async function reviewFollowup(effort, deletedAtStart) {
   return done(r);
 }
 
+// A --files path that doesn't exist must be a deletion the tracker or git knows; anything else is a wrong
+// path (e.g. relative to another folder), and the call stops before GPT reviews nothing.
+function stopOnUnknownPaths(files, s, deleted) {
+  const known = new Set([...Object.keys(s.changes || {}), ...deleted].map(f => path.resolve(f).toLowerCase()));
+  const unknown = files.filter(f => !fs.existsSync(f) && !known.has(f.toLowerCase()));
+  if (unknown.length) C.die(`--files: not found and not a tracked deletion: ${unknown.join(', ')} (relative paths are looked up from ${C.root} and the current folder). Nothing was sent to GPT.`);
+}
+
 async function review() {
   const { opts } = C;
   const root = C.root;
@@ -343,7 +351,8 @@ async function review() {
   if (!opts.task) C.die('review needs --task "<what the change is supposed to accomplish>"');
   const s = L.readState(root);
   // --files limits the review AND what it clears; without it, all pending changes are covered.
-  const scope = opts.files ? String(opts.files).split(',').map(f => path.resolve(f.trim())).filter(Boolean) : null;
+  const scope = opts.files ? C.files(opts.files) : null;
+  stopOnUnknownPaths(scope || [], s, deletedAtStart);
   const files = scope || L.pending(s).map(([f]) => f);
   if (!files.length) {
     const cand = (L.gitStatus(root) || []).filter(e => L.isCode(e.abs)).map(e => e.abs);
@@ -464,8 +473,9 @@ async function score() {
   if (!opts.file) C.die('score needs --file <rubric.md|->');
   const rubric = C.readArgFile(opts.file);
   const effort = C.effortFor();
-  const files = opts.files ? String(opts.files).split(',').map(f => path.resolve(f.trim())).filter(Boolean) : [];
+  const files = C.files(opts.files);
   const deletedAtStart = files.length ? L.gitDeleted(C.root) : [];
+  stopOnUnknownPaths(files, files.length ? L.readState(C.root) : {}, deletedAtStart);
   const cutoff = Date.now();
   const mat = files.length ? reviewMaterial(files, !!opts.full) : null;
   if (mat) registerRunning(files, cutoff, X.sigOf('score', mat.full ? 'full' : 'diff', rubric, opts.evidence || '', opts['evidence-file'] || ''), mat.map);
