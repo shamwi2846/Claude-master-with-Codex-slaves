@@ -53,7 +53,7 @@ After restoring, start a new Claude session.
 | `.claude/RELEASE.txt` | When this backup was released, the check result and the hash of every file (`restore.js` checks them) |
 | `.claude.prev/` | The previous release, kept by `release.js` |
 
-**Keeping this backup current:** after changing the setup, run `node %USERPROFILE%\.claude\gpt\tests\release.js`. Don't edit files here by hand: `restore.js` refuses a backup that differs from its release (`--force` overrides).
+**Keeping this backup current:** after changing the setup, run `node "$env:USERPROFILE\.claude\gpt\tests\release.js"` (PowerShell). Don't edit files here by hand: `restore.js` refuses a backup that differs from its release (`--force` overrides).
 
 ## Requirements on a new machine
 - **Node.js.**

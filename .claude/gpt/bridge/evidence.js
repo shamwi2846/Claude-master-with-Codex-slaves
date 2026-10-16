@@ -82,6 +82,8 @@ function runTracked(cmd, timeoutMs) {
     // Keep a rolling window of the latest output: the END (final errors, summary) is what matters.
     const CAP = 8 * 1024 * 1024;
     const add = d => { if (head.length < 4096) head += d; buf += d; if (buf.length > CAP) { buf = buf.slice(-CAP / 2); dropped = true; } };
+    // (decoded as one stream: a character split between two chunks stays whole)
+    child.stdout.setEncoding('utf8'); child.stderr.setEncoding('utf8');
     child.stdout.on('data', add);
     child.stderr.on('data', add);
     let hard;

@@ -107,6 +107,7 @@ function runCodex({ prompt, effort, sandbox, mode, cwd = C.root, resume, persist
     child.on('close', () => liveChildren.delete(child));
     if (onSpawn) try { onSpawn(child); } catch {}
     let raw = '';
+    child.stdout.setEncoding('utf8'); child.stderr.setEncoding('utf8'); // (a character split between chunks stays whole)
     child.stdout.on('data', d => { raw += d; });
     child.stderr.on('data', d => { raw += d; });
     child.stdin.on('error', () => {}); // EPIPE if codex dies early; the close/error path reports it

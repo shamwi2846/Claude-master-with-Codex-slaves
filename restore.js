@@ -18,7 +18,9 @@ const scripts = dir => { try { return fs.readdirSync(path.join(src, dir)).filter
 // Written in this order: the bridge modules (gpt/bridge) and lib.js before gpt.js and gate.js, which need
 // them — a restore that stops midway never leaves a gpt.js without its modules. Then the regression checks
 // and release script (gpt/tests), when the backup has them.
-const files = ['CLAUDE.md', 'agents/fallback-reviewer.md', 'gpt/config.json', ...scripts('gpt/bridge'), 'gpt/lib.js', 'gpt/gpt.js', 'gpt/gate.js', 'gpt/REFERENCE.md']
+// Every agent file the release packed (release.js takes the whole agents folder).
+const agents = (() => { try { return fs.readdirSync(path.join(src, 'agents')).filter(n => fs.statSync(path.join(src, 'agents', n)).isFile()).map(n => `agents/${n}`); } catch { return []; } })();
+const files = ['CLAUDE.md', ...agents, 'gpt/config.json', ...scripts('gpt/bridge'), 'gpt/lib.js', 'gpt/gpt.js', 'gpt/gate.js', 'gpt/REFERENCE.md']
   .concat(scripts('gpt/tests'));
 
 function fail(msg) { console.error('Restore aborted, nothing was changed: ' + msg); process.exit(1); }

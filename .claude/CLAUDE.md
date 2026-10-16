@@ -66,7 +66,7 @@ Never block the user's work.
 3. **Never trade or handle credentials.** Neither model trades, moves money or enters credentials.
 
 ## MetaTrader Strategy Tester (standing confirmation)
-The user confirmed on 2026-10-15 that the MetaTrader 5 accounts saved on this PC are not important. Treat this as the explicit confirmation the `mql5-coding` skill requires: run `Invoke-Mt5TesterSmoke.ps1 -Execute` (and project-profile or scenario-batch tester runs) with `-AcknowledgeSavedAccountRisk` without asking. Still never place trades, move money or enter credentials. If the user adds a real-money account, ask again.
+The user confirmed on 2026-10-15 that the MetaTrader 5 accounts saved on the PC named `SHARIFHAMWI` are not important. On that PC only (check `$env:COMPUTERNAME`), treat this as the explicit confirmation the `mql5-coding` skill requires: run `Invoke-Mt5TesterSmoke.ps1 -Execute` (and project-profile or scenario-batch tester runs) with `-AcknowledgeSavedAccountRisk` without asking. On any other PC (e.g. after a restore), ask the user first. Still never place trades, move money or enter credentials. If the user adds a real-money account, ask again.
 
 ## Documents
 GPT writes medium and long documents with `gpt.js write`, and Claude reviews the diff, then applies, revises or discards. Claude does tiny edits and config or agent files itself. Writing is not sending: never email, publish or submit without the user's OK.
