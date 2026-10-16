@@ -23,7 +23,7 @@ const run = (what, file, args, home, timeout = 600000) => {
   const r = spawnSync(process.execPath, [file, ...args], { encoding: 'utf8', env: envFor(home), cwd: home, timeout });
   const out = `${r.stdout || ''}${r.stderr || ''}`.trim();
   ok(r.status === 0, `${what}${r.status === 0 ? '' : ` (exit ${r.status}${r.error ? ', ' + r.error.message : ''})\n${out.split('\n').slice(-15).join('\n')}`}`);
-  return r.status === 0 ? out : null;
+  return r.status === 0 ? r.stdout : null; // stdout only: a warning on stderr must not break parsing
 };
 const finish = () => {
   if (!failed) fs.rmSync(base, { recursive: true, force: true, maxRetries: 3 });
@@ -91,8 +91,9 @@ const shell = { tool_input: { command: 'echo hi' }, tool_use_id: 'b1' };
 fire('pre-bash', 'Bash', shell); fire('post-bash', 'Bash', { ...shell, tool_response: { stdout: 'hi', stderr: '' } });
 const status = run('gpt.js status in profile C', path.join(CC, 'gpt', 'gpt.js'), ['status', '--project', P], C);
 let pending = [];
-try { pending = JSON.parse(status).pendingReview.map(x => path.resolve(x.file)); } catch {}
-ok(pending.includes(path.resolve(target)), "the restored hooks track Claude's edit in profile C");
+// (the JSON object only: a PC without Codex, like CI, may print a note before it)
+try { pending = JSON.parse(String(status).slice(String(status).indexOf('{'))).pendingReview.map(x => path.resolve(x.file).toLowerCase()); } catch {}
+ok(pending.includes(path.resolve(target).toLowerCase()), `the restored hooks track Claude's edit in profile C${pending.includes(path.resolve(target).toLowerCase()) ? '' : `: status said ${String(status).slice(0, 600)}`}`);
 ok(/GPT review needed/.test(fire('stop')), 'the Stop hook asks for its review');
 ok(/"permissionDecision":"deny"/.test(fire('pre-computer', 'mcp__computer-use__screenshot', { tool_input: {} })), "Claude's own desktop control is delegated to GPT");
 let issues = ''; try { issues = fs.readFileSync(path.join(CC, 'gpt', 'logs', 'hooks.log'), 'utf8').trim(); } catch {}

@@ -71,7 +71,7 @@ fs.mkdirSync(path.join(SD, 'prev')); fs.writeFileSync(path.join(SD, 'prev', 'doc
 let status = 'PARTIAL';
 K.codex.ask = async o => { o.before(); fs.writeFileSync(path.join(o.cwd, 'doc.md'), 'half\n'); return { ok: true, text: `STATUS: ${status}\n- did half`, log: 'l', secs: 1 }; };
 K.codex.markUnavailable = () => {}; K.codex.finish = () => { throw new Error('FIN'); };
-const realExit = process.exit; let exited = 0; process.exit = () => { exited++; throw new Error('EXIT'); };
+const realExit = process.exit; process.exit = () => { throw new Error('EXIT'); };
 const rw = K.write.runWrite;
 const log0 = console.log; console.log = () => {};
 (async () => {
