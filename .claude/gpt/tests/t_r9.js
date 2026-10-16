@@ -1,5 +1,5 @@
 // Round-9 gpt.js fixes: findings during edits, follow-up round bases, atomic stage publish, orphan kill, rolling evidence.
-const __G = require('path').join(__dirname, '..').replace(/\\/g, '/') + '/'; // the setup under test
+require('./profile-guard'); const __G = require('path').join(__dirname, '..').replace(/\\/g, '/') + '/'; // the setup under test
 const path = require('path'), fs = require('fs'), os = require('os'), { spawn, spawnSync } = require('child_process');
 const L = require(__G + 'lib.js');
 const ok = (c, m) => console.log(c ? 'PASS' : 'FAIL', m);

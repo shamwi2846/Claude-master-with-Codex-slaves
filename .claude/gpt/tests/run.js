@@ -30,7 +30,8 @@ function freshProfile() {
   conf.codexJs = stub;
   fs.writeFileSync(path.join(g, 'config.json'), JSON.stringify(conf, null, 2));
 }
-const env = { ...process.env, USERPROFILE: PROFILE, HOME: PROFILE, GPT_BACKUP_DIR: BACKUP };
+// GPT_TEST_PROFILE: lets each script check it runs inside this profile (tests/profile-guard.js)
+const env = { ...process.env, USERPROFILE: PROFILE, HOME: PROFILE, GPT_BACKUP_DIR: BACKUP, GPT_TEST_PROFILE: PROFILE };
 
 const strict = process.argv.includes('--strict');
 const filter = process.argv.slice(2).find(a => !a.startsWith('--')) || '';

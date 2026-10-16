@@ -1,5 +1,5 @@
 // Attribution across projects and sessions, Stop notes, the usage-limit message, score mode, status --summary.
-const __G = require('path').join(__dirname, '..').replace(/\\/g, '/') + '/'; // the setup under test
+require('./profile-guard'); const __G = require('path').join(__dirname, '..').replace(/\\/g, '/') + '/'; // the setup under test
 const path = require('path'), fs = require('fs'), os = require('os'), { spawnSync } = require('child_process');
 const L = require(__G + 'lib.js');
 const K = require('./bridge-kit');

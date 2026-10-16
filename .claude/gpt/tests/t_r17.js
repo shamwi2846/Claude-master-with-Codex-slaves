@@ -1,5 +1,5 @@
 // Goal round 5: config value sets, git scan failures traced, empty test discovery, release lock, restore fallback.
-const __G = require('path').join(__dirname, '..').replace(/\\/g, '/') + '/'; // the setup under test
+require('./profile-guard'); const __G = require('path').join(__dirname, '..').replace(/\\/g, '/') + '/'; // the setup under test
 const path = require('path'), fs = require('fs'), os = require('os'), { spawnSync } = require('child_process');
 const L = require(__G + 'lib.js');
 const ok = (c, m) => console.log(c ? 'PASS' : 'FAIL', m);

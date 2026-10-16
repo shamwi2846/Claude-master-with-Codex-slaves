@@ -1,6 +1,6 @@
 // Review B fixes: overwritten drafts, ignore precedence, checkout over ignored files, receipts hashed under
 // the lock, verified setup writes, strict receipt locks, probe deadline, bulk moves, Stop-note signature.
-const __G = require('path').join(__dirname, '..').replace(/\\/g, '/') + '/'; // the setup under test
+require('./profile-guard'); const __G = require('path').join(__dirname, '..').replace(/\\/g, '/') + '/'; // the setup under test
 const path = require('path'), fs = require('fs'), os = require('os'), { spawnSync } = require('child_process');
 const L = require(__G + 'lib.js');
 const K = require('./bridge-kit');

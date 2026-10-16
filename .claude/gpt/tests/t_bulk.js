@@ -1,4 +1,4 @@
-const __G = require('path').join(__dirname, '..').replace(/\\/g, '/') + '/'; // the setup under test
+require('./profile-guard'); const __G = require('path').join(__dirname, '..').replace(/\\/g, '/') + '/'; // the setup under test
 const path=require('path'),fs=require('fs'),os=require('os'),{spawnSync}=require('child_process');const L=require(__G + 'lib.js');
 const gate=(ev,i)=>spawnSync(process.execPath,[__G + 'gate.js',ev],{input:JSON.stringify(i),encoding:'utf8'}).stdout;
 const p=path.join(os.homedir(),'gpt-bulk');fs.rmSync(p,{recursive:true,force:true});fs.mkdirSync(p);const SID='bulk-'+Date.now();

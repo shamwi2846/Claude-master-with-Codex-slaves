@@ -1,4 +1,4 @@
-const __G = require('path').join(__dirname, '..').replace(/\\/g, '/') + '/'; // the setup under test
+require('./profile-guard'); const __G = require('path').join(__dirname, '..').replace(/\\/g, '/') + '/'; // the setup under test
 const K = require('./bridge-kit');
 // Throwaway tests for audit-A fixes (no GPT calls).
 const path = require('path'), fs = require('fs'), os = require('os');

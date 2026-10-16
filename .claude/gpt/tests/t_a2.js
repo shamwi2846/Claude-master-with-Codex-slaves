@@ -1,4 +1,4 @@
-const __G = require('path').join(__dirname, '..').replace(/\\/g, '/') + '/'; // the setup under test
+require('./profile-guard'); const __G = require('path').join(__dirname, '..').replace(/\\/g, '/') + '/'; // the setup under test
 const K = require('./bridge-kit');
 // Throwaway tests: legacy log parsing + task recovery + tree-kill on timeout.
 const path = require('path'), fs = require('fs'), os = require('os'), { spawnSync } = require('child_process');
