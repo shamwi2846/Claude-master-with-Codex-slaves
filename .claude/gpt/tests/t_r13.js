@@ -11,9 +11,8 @@ const git = (...a) => spawnSync('git', a, { cwd: P, encoding: 'utf8' });
 const f = n => path.join(P, n);
 const prompt = (text = 'go') => { wait(30); gate('prompt', { ...b, prompt: text }); wait(30); };
 const rec = n => { const s = L.readState(P); return Object.entries(s.changes).filter(([k]) => k.toLowerCase() === f(n).toLowerCase()); };
-const src = fs.readFileSync(__G + 'gpt.js', 'utf8');
-const cut = (a, z) => src.slice(src.indexOf(a), src.indexOf(z, src.indexOf(a)));
-const mr = new Function('L', 'root', 'fs', 'path', cut('function markReviewed(', '\n}\n') + '\n}; return markReviewed;')(L, P, fs, path);
+const K = require('./bridge-kit').at(P);
+const mr = K.review.markReviewed;
 const ack = () => mr('claude-final', Date.now(), null, L.gitDeleted(P));
 const edit = (file, from, to, id) => {
   const ev = { ...b, tool_use_id: id, tool_name: 'Edit', tool_input: { file_path: file, old_string: from, new_string: to } };
@@ -67,16 +66,13 @@ mr('gpt', Date.now() - 60000, [G], [], { verdict: 'NO_ISSUES', log: f('rA.md'), 
 ok(fs.readFileSync(L.baselineOf(P, G), 'utf8') === 'v2\n', 'an older review finishing later does not overwrite the baseline');
 
 // G1. a PARTIAL write result is shown but not staged
-const r0 = src.indexOf('async function runWrite('), r1 = src.indexOf('\n}\n', r0) + 2;
 const SD = f('stage'); fs.mkdirSync(path.join(SD, 'work'), { recursive: true }); fs.writeFileSync(path.join(SD, 'work', 'doc.md'), 'reviewed\n');
 fs.mkdirSync(path.join(SD, 'prev')); fs.writeFileSync(path.join(SD, 'prev', 'doc.md'), 'reviewed\n');
-const copyTree = (a, z) => { fs.rmSync(z, { recursive: true, force: true }); fs.mkdirSync(z, { recursive: true }); if (fs.existsSync(a)) fs.cpSync(a, z, { recursive: true }); };
-const pub = new Function('fs', cut('function publishDir(', '\nfunction loadManifest') + '; return publishDir;')(fs);
 let status = 'PARTIAL';
-const ask = async o => { o.before(); fs.writeFileSync(path.join(o.cwd, 'doc.md'), 'half\n'); return { ok: true, text: `STATUS: ${status}\n- did half`, log: 'l', secs: 1 }; };
+K.codex.ask = async o => { o.before(); fs.writeFileSync(path.join(o.cwd, 'doc.md'), 'half\n'); return { ok: true, text: `STATUS: ${status}\n- did half`, log: 'l', secs: 1 }; };
+K.codex.markUnavailable = () => {}; K.codex.finish = () => { throw new Error('FIN'); };
 const realExit = process.exit; let exited = 0; process.exit = () => { exited++; throw new Error('EXIT'); };
-const rw = new Function('fs', 'path', 'ask', 'copyTree', 'publishDir', 'effortFor', 'writePrompt', 'saveManifest', 'markUnavailable', 'finish', 'stageReport', 'cfg',
-  src.slice(r0, r1) + '; return runWrite;')(fs, path, ask, copyTree, pub, () => 'xhigh', () => '', () => {}, () => {}, () => { throw new Error('FIN'); }, () => '', { maxRounds: 3 });
+const rw = K.write.runWrite;
 const log0 = console.log; console.log = () => {};
 (async () => {
   try { await rw(SD, { id: 'x', round: 2, entries: [] }, path.join(SD, 'prev')); } catch {}

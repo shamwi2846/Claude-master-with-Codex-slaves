@@ -42,8 +42,8 @@ function presets() {
   fs.rmSync(P, { recursive: true, force: true }); fs.mkdirSync(P);
   const git = (...a) => spawnSync('git', a, { cwd: P, encoding: 'utf8' });
   const gate = (ev, i) => spawnSync(process.execPath, [__G + 'gate.js', ev], { input: JSON.stringify(i), encoding: 'utf8' }).stdout;
-  const src = fs.readFileSync(__G + 'gpt.js', 'utf8'), i0 = src.indexOf('function markReviewed('), i1 = src.indexOf('\n}\n', i0) + 2;
-  const mr = new Function('L', 'root', 'fs', 'path', src.slice(i0, i1) + '; return markReviewed;')(L, P, fs, path);
+  const K = require('./bridge-kit');
+  const mr = (...a) => K.at(P).review.markReviewed(...a);
   const S = path.join(P, 'live.set'), b = { cwd: P, session_id: 'r19c-' + Date.now() };
   git('init', '-q'); git('config', 'user.email', 't@t'); git('config', 'user.name', 't');
   fs.writeFileSync(S, 'Risk=1\n'); git('add', '-A'); git('commit', '-qm', 'init');
@@ -58,8 +58,7 @@ function presets() {
   const st = L.readState(P), c = Object.entries(st.changes).find(([k]) => k.toLowerCase() === S.toLowerCase());
   ok(c && c[1].at > L.reviewedAtFor(st, c[1]), "putting a reviewed preset back over the owner's edits is pending (git)");
   // ...and its review material says so, even next to another file that has a real diff
-  const material = root => new Function('L', 'root', 'path', 'fs', 'spawnSync', 'stamp', 'NULL_DEV',
-    src.slice(src.indexOf('function noIndexDiff'), src.indexOf('// Build/test/compile output')) + '; return reviewMaterial;')(L, root, path, fs, spawnSync, () => 'm' + Date.now() + Math.random(), 'NUL');
+  const material = root => (...a) => K.at(root).review.reviewMaterial(...a);
   const O = path.join(P, 'other.js'); fs.writeFileSync(O, 'let x = 1;\n');
   const m1 = material(P)([S, O], false);
   const partOf = (text, f) => (text.split('### ').find(p => p.startsWith(f)) || '');
@@ -68,7 +67,7 @@ function presets() {
   // the same through a shell command in a non-git folder
   const Q = path.join(os.homedir(), 'gpt-final2'); fs.rmSync(Q, { recursive: true, force: true }); fs.mkdirSync(Q);
   const T = path.join(Q, 'live.set'), q = { cwd: Q, session_id: 'r19d-' + Date.now() };
-  const mq = new Function('L', 'root', 'fs', 'path', src.slice(i0, i1) + '; return markReviewed;')(L, Q, fs, path);
+  const mq = (...a) => K.at(Q).review.markReviewed(...a);
   gate('session', q); gate('prompt', { ...q, prompt: 'go' });
   fs.writeFileSync(T, 'Risk=2\n'); const tq = fs.statSync(T).mtime; fs.copyFileSync(T, path.join(Q, 'A.bak'));
   mq('claude-final', Date.now(), [T], []);

@@ -28,7 +28,7 @@ L.updateState(proj, s => { s.changes[B] = { lines: 6, at: 1, reviewedAt: 10, ope
 let o = gate('stop', { cwd: sub, session_id: SID });
 ok(/Open GPT findings/.test(o) && /GPT review needed/.test(o), 'findings and pending changes in one block');
 const o2 = gate('stop', { cwd: sub, session_id: SID });
-ok(!/"decision":"block"/.test(o2) && /still pending/.test(o2), 'second stop does not block again (only a note)');
+ok(!/"decision":"block"/.test(o2) && !/still pending/.test(o2), 'second stop, same pending files: no second block and no repeated note');
 
 // 3. reverted edit -> no longer pending
 const C = path.join(proj, 'c.py'); fs.writeFileSync(C, 'orig = 1\n'); Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 30);

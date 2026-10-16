@@ -4,11 +4,10 @@ const path = require('path'), fs = require('fs'), os = require('os'), { spawnSyn
 const L = require(__G + 'lib.js');
 const gate = (ev, i) => spawnSync(process.execPath, [__G + 'gate.js', ev], { input: JSON.stringify(i), encoding: 'utf8' }).stdout;
 const ok = (c, m) => console.log(c ? 'PASS' : 'FAIL', m);
-const src = fs.readFileSync(__G + 'gpt.js', 'utf8');
-const cut = (a, z) => src.slice(src.indexOf(a), src.indexOf(z, src.indexOf(a)));
+const K = require('./bridge-kit');
 
 // a git diff that fails is "unknown", never "unchanged"
-const nid = new Function('spawnSync', cut('function noIndexDiff', '\n// Freeze the reviewed') + '; return noIndexDiff;')(spawnSync);
+const nid = K.review.noIndexDiff;
 ok(nid(path.join(os.homedir(), 'no-such-file-' + Date.now()), path.join(os.homedir(), 'no-such-either')) === null, 'failed diff returns null (read the whole file)');
 
 // config validation (shared by the runtime loader and restore.js)
@@ -32,18 +31,18 @@ gate('pre-plan', { cwd: P, session_id: 'r14-' + Date.now(), tool_input: { plan: 
 ok(fs.readFileSync(L.HOOK_TIMES, 'utf8').length > before, 'hook run recorded in hook-times.tsv');
 
 // a write result without STATUS: DONE is not staged
-const r0 = src.indexOf('async function runWrite('), r1 = src.indexOf('\n}\n', r0) + 2;
 const SD = path.join(P, 'stage'); fs.mkdirSync(path.join(SD, 'work'), { recursive: true }); fs.writeFileSync(path.join(SD, 'work', 'doc.md'), 'reviewed\n');
-const copyTree = (a, z) => { fs.rmSync(z, { recursive: true, force: true }); fs.mkdirSync(z, { recursive: true }); if (fs.existsSync(a)) fs.cpSync(a, z, { recursive: true }); };
-const ask = async o => { o.before(); fs.writeFileSync(path.join(o.cwd, 'doc.md'), 'new\n'); return { ok: true, text: '- did it (forgot the status line)', log: 'l', secs: 1 }; };
+K.at(P);
+K.codex.ask = async o => { o.before(); fs.writeFileSync(path.join(o.cwd, 'doc.md'), 'new\n'); return { ok: true, text: '- did it (forgot the status line)', log: 'l', secs: 1 }; };
+K.codex.markUnavailable = () => {}; K.codex.finish = () => {};
+let published = false; K.write.publishDir = () => { published = true; throw new Error('should not publish'); };
 const realExit = process.exit; process.exit = () => { throw new Error('EXIT'); };
-const rw = new Function('fs', 'path', 'ask', 'copyTree', 'publishDir', 'effortFor', 'writePrompt', 'saveManifest', 'markUnavailable', 'finish', 'stageReport', 'cfg',
-  src.slice(r0, r1) + '; return runWrite;')(fs, path, ask, copyTree, () => { throw new Error('should not publish'); }, () => 'xhigh', () => '', () => {}, () => {}, () => {}, () => '', { maxRounds: 3 });
+const rw = K.write.runWrite;
 const log0 = console.log; console.log = () => {};
 (async () => {
   try { await rw(SD, { id: 'x', round: 1, entries: [] }, path.join(SD, 'work')); } catch {}
   console.log = log0; process.exit = realExit;
-  ok(fs.readFileSync(path.join(SD, 'work', 'doc.md'), 'utf8') === 'reviewed\n', 'a write result without STATUS: DONE is not staged');
+  ok(!published && fs.readFileSync(path.join(SD, 'work', 'doc.md'), 'utf8') === 'reviewed\n', 'a write result without STATUS: DONE is not staged');
 
   // huge non-git folder: the files the walk reaches are still compared, and the partial coverage is recorded
   const Q = path.join(os.homedir(), 'gpt-final2'); fs.rmSync(Q, { recursive: true, force: true });

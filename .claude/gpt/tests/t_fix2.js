@@ -16,8 +16,7 @@ const lines = L.readState(proj).changes[C].lines;
 ok(lines >= 10, `bulk delete counted: lines=${lines}`);
 
 // binary (UTF-16) change is reported, not "unchanged"
-const src = fs.readFileSync(__G + 'gpt.js', 'utf8');
-const nid = new Function('spawnSync', src.slice(src.indexOf('function noIndexDiff'), src.indexOf('// `full`')) + '; return noIndexDiff;')(spawnSync);
+const nid = require('./bridge-kit').review.noIndexDiff;
 const b1 = path.join(proj, 'a.ps1'), b2 = path.join(proj, 'b.ps1');
 fs.writeFileSync(b1, Buffer.from('\ufeffWrite-Host 1', 'utf16le')); fs.writeFileSync(b2, Buffer.from('\ufeffWrite-Host 2', 'utf16le'));
 ok(/binary or non-text change/.test(nid(b1, b2)), 'UTF-16 change reported');

@@ -1,8 +1,6 @@
-# Claude master with Codex slaves
+# Claude + GPT setup: backup copy
 
-A global Claude Code configuration in which Claude is the only one who writes code and GPT (through the Codex CLI) reviews, reads and operates the screen. This repository holds a **release** of that setup — the same layout as the local backup folder — plus CI that runs its regression checks.
-
-The rules:
+This folder is a backup of a global Claude Code configuration with these rules:
 - **Claude writes all code.** GPT (`gpt-6.1-sol` via the Codex CLI, always at `xhigh` effort) reviews code, plans and ideas. Those runs are read-only and get no MCP tools.
 - **GPT writes documents.** It works on staged copies only. Claude reviews the changes and then applies, revises or discards them.
 - **GPT does the heavy reading.** Big logs, MT5 journals, tester reports and build output go through `gpt.js digest`, which returns a short summary with line references. This saves Claude's tokens.
@@ -46,22 +44,16 @@ After restoring, start a new Claude session.
 | `.claude/settings.json` | Full copy of the global settings at backup time, including the hooks |
 | `.claude/agents/fallback-reviewer.md` | Claude reviewer used when GPT is unavailable |
 | `.claude/gpt/config.json` | Model name, effort levels and timeouts |
-| `.claude/gpt/gpt.js` | Launcher Claude uses to call GPT (`review`, `plan`, `idea`, `computer`) |
+| `.claude/gpt/gpt.js` | Launcher Claude uses to call GPT (`review`, `plan`, `idea`, `score`, `computer`) |
+| `.claude/gpt/bridge/` | The launcher's modules: GPT calls, reviews, evidence, document writing, commands |
 | `.claude/gpt/gate.js` | Hook script that enforces reviews and the computer-use handoff |
 | `.claude/gpt/lib.js` | Shared helpers |
 | `.claude/gpt/REFERENCE.md` | Detailed command reference, read on demand (keeps `CLAUDE.md` small) |
 | `.claude/gpt/tests/` | Regression checks (`run.js`, no GPT calls) and `release.js`, which refreshes this backup only after the checks pass |
 | `.claude/RELEASE.txt` | When this backup was released, the check result and the hash of every file (`restore.js` checks them) |
-| `.claude.prev/` | The previous release, kept by `release.js` (local backup folders only; not committed) |
-| `docs/` | The scoring prompts used to bring the setup to 10/10 |
-| `.github/workflows/ci.yml` | CI: syntax check and the regression checks on Windows |
+| `.claude.prev/` | The previous release, kept by `release.js` |
 
-**Keeping this backup current:** after changing the setup, run `node %USERPROFILE%\.claude\gpt\tests\release.js` (local backup) or add `--backup <this repository's folder>` and commit the result. Don't edit files under `.claude/` by hand: `restore.js` refuses a backup that differs from its release (`--force` overrides).
-
-## Tests and CI
-- Locally: `node %USERPROFILE%\.claude\gpt\tests\run.js` runs every check (no GPT calls) in a throwaway profile; `--strict` also fails on skipped checks.
-- CI (GitHub Actions, `windows-latest`): checks the syntax of every script, then runs `node .claude/gpt/tests/run.js --strict` with this repository as the backup under test, so the restore checks restore this very release.
-- `.gitattributes` disables line-ending conversion: the release hashes are of the exact bytes.
+**Keeping this backup current:** after changing the setup, run `node %USERPROFILE%\.claude\gpt\tests\release.js`. Don't edit files here by hand: `restore.js` refuses a backup that differs from its release (`--force` overrides).
 
 ## Requirements on a new machine
 - **Node.js.**
@@ -79,4 +71,4 @@ Versions verified with this backup:
 - The Codex location is detected automatically if it differs.
 
 ## Note
-`settings.json` no longer contains an API token: the z.ai routing was removed. It still holds your personal settings, so keep this repository private.
+`settings.json` no longer contains an API token: the z.ai routing was removed. It still holds your personal settings, so don't share this folder publicly.

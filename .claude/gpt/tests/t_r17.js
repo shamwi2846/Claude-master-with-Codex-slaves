@@ -52,7 +52,7 @@ ok(rr.status === 1 && /no check scripts/.test(rr.stdout), 'empty test discovery 
 
 // release.js: one release per backup folder — the lock is a socket the OS holds while a release runs
 const BK = path.join(os.homedir(), 'bk-' + Date.now()); fs.mkdirSync(BK); fs.writeFileSync(path.join(BK, 'restore.js'), '// stub\n');
-const port = 49152 + parseInt(require('crypto').createHash('sha1').update(path.resolve(BK).toLowerCase()).digest('hex').slice(0, 4), 16) % 16000;
+const port = 20000 + parseInt(require('crypto').createHash('sha1').update(path.resolve(BK).toLowerCase()).digest('hex').slice(0, 4), 16) % 16000;
 const holder = require('net').createServer().listen(port, '127.0.0.1', () => {
   const r = spawnSync(process.execPath, [__G + 'tests/release.js', '--backup', BK], { encoding: 'utf8', timeout: 60000 });
   holder.close();

@@ -3,13 +3,12 @@ const __G = require('path').join(__dirname, '..').replace(/\\/g, '/') + '/'; // 
 const path = require('path'), fs = require('fs'), os = require('os'), { spawn, spawnSync } = require('child_process');
 const L = require(__G + 'lib.js');
 const ok = (c, m) => console.log(c ? 'PASS' : 'FAIL', m);
-const src = fs.readFileSync(__G + 'gpt.js', 'utf8');
-const cut = (a, b) => src.slice(src.indexOf(a), src.indexOf(b, src.indexOf(a)));
 const P = path.join(os.homedir(), 'gpt-final'); fs.rmSync(P, { recursive: true, force: true }); fs.mkdirSync(P);
 const f = n => path.join(P, n);
+const K = require('./bridge-kit').at(P);
 
 // A. findings are recorded even if the file was edited after it was frozen
-const mr = new Function('L', 'root', 'fs', 'path', cut('function markReviewed(', '\n}\n') + '\n}; return markReviewed;')(L, P, fs, path);
+const mr = K.review.markReviewed;
 const A = f('a.js'); fs.writeFileSync(A, 'v2\n');
 const cutoff = Date.now() - 1000;
 L.updateState(P, s => { s.changes[A] = { lines: 5, at: Date.now() }; }); // edited after the freeze
@@ -18,8 +17,7 @@ const ca = L.readState(P).changes[A];
 ok([].concat(ca.openFindings || []).includes(f('r1.md')) && ca.at > L.reviewedAtFor(L.readState(P), ca), 'findings recorded for a file edited during the review; newer version still pending');
 
 // B. a follow-up diffs against its previous round's frozen copy, not a baseline moved by another review
-const mod = new Function('L', 'root', 'path', 'fs', 'spawnSync', 'stamp', 'NULL_DEV',
-  cut('function noIndexDiff', '// Build/test/compile output') + '; return { reviewMaterial, keepRound, roundBases };')(L, P, path, fs, spawnSync, () => 'm' + Date.now() + Math.random(), 'NUL');
+const mod = K.review;
 const B = f('b.js'); fs.writeFileSync(B, 'line1\nbug here\nline3\n');
 const snapDir = f('snapx'); fs.mkdirSync(snapDir); fs.copyFileSync(B, path.join(snapDir, '0_b.js'));
 const log = f('logs/rA.md'); fs.mkdirSync(path.dirname(log)); fs.writeFileSync(log, '- Round: 1\n');
@@ -33,7 +31,7 @@ const mat2 = mod.reviewMaterial([B], false, true, null);
 ok(/unchanged since the last review/.test(mat2.text), 'without round copies the moved baseline shows no diff (the old behaviour)');
 
 // C. publishDir swaps whole directories; a failed publish keeps the old version
-const pub = new Function('fs', cut('function publishDir(', '\nfunction loadManifest') + '; return publishDir;')(fs);
+const pub = K.write.publishDir;
 const W = f('work'), N = f('next');
 fs.mkdirSync(W); fs.writeFileSync(path.join(W, 'doc.md'), 'old\n'); fs.mkdirSync(N); fs.writeFileSync(path.join(N, 'doc.md'), 'new\n');
 pub(N, W);
@@ -42,8 +40,7 @@ let threw = false; try { pub(f('missing'), W); } catch { threw = true; }
 ok(threw && fs.readFileSync(path.join(W, 'doc.md'), 'utf8') === 'new\n', 'failed publish leaves the previous version in place');
 
 // D + F. evidence runs: orphans that outlive the shell are killed on timeout; output keeps its real end
-const K = new Function('spawnSync', cut('// Windows process table', '// Codex workers still running') + '; return { killTree, PS_TABLE, parseTable, learnTree };')(spawnSync);
-const run = new Function('spawn', 'killTree', 'root', 'liveChildren', 'PS_TABLE', 'parseTable', 'learnTree', cut('// Windows: evidence commands run inside a Job Object', 'async function evidence') + '; return runTracked;')(spawn, K.killTree, P, new Set(), K.PS_TABLE, K.parseTable, K.learnTree);
+const run = K.evidence.runTracked; // runs in the project folder (P)
 // `start /b`: the worker outlives cmd.exe and keeps the inherited output pipes open
 const orphan = `start "" /b node -e "console.log('PID='+process.pid);setTimeout(()=>{},120000)"`;
 (async () => {

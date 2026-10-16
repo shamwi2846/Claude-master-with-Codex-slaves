@@ -88,6 +88,89 @@ function contentTime(s, abs, now) {
   return now;
 }
 
+// The project's ignore list (.claude/gpt.json) — not while gpt.json itself has an unreviewed change or open
+// findings (here, or in any other session's project: another session may have changed it), or is among the
+// files being recorded: a widened list must be reviewed before it hides anything.
+function ignoreRules(root, s, changing = []) {
+  const ps = L.projectSettings(root);
+  if (!ps.ignore || !ps.ignore.length) return null;
+  const k = ps._file.toLowerCase();
+  if (changing.some(p => path.resolve(p).toLowerCase() === k)) return null;
+  const c = s.changes && s.changes[L.changeKey(s, ps._file)];
+  if (c && (c.at > L.reviewedAtFor(s, c) || c.openFindings)) return null;
+  return L.pendingAnywhere(ps._file) ? null : ps;
+}
+// A file the ignore list hides — unless it already has a pending change or open findings (keep tracking it).
+const ignoredIn = (ps, s, abs) => {
+  if (!ps || !L.ignoredByProject(ps, abs)) return false;
+  const c = s.changes && s.changes[L.changeKey(s, abs)];
+  return !(c && (c.at > L.reviewedAtFor(s, c) || c.openFindings));
+};
+const ignoredNow = (root, abs) => { const s = L.readState(root); return ignoredIn(ignoreRules(root, s, [abs]), s, abs); };
+const isSetupFile = abs => L.globalSetupFiles().some(x => x.toLowerCase() === path.resolve(abs).toLowerCase());
+// Git probes for not-authored checks end by this time, and recording after them waits at most until
+// RECORD_DEADLINE for the state lock: together they stay inside the 15-s hook timeout.
+const PROBE_DEADLINE = T0 + 6000, RECORD_DEADLINE = T0 + 13500;
+const lockWait = () => Math.max(1000, Math.min(8000, RECORD_DEADLINE - Date.now()));
+
+// Changes a shell command's author didn't write, or that aren't tracked: lower-case path -> why.
+//   ignored     matches the project's ignore list
+//   another session's write   this setup's own file, written through Edit/Write by another session while the
+//               command ran (its fingerprints only saw the result)
+//   copy / move a created file whose content existed before the command (not as an unreviewed change), or
+//               a deleted file whose content reappears in a created file with the same extension
+//   branch switch   nested repo (non-git folder): see L.branchSwitch
+// Config destinations stay changes (see L.gitNotAuthored). `created`: every file the command created, also
+// those the bulk rule drops (a move's destination). The caller still tracks a file that is already pending.
+function shellSkips(root, inp, snap, before, after, changed, repoTops, created) {
+  const skip = new Map();
+  const s = L.readState(root);
+  const ign = ignoreRules(root, s, changed.map(x => x.p));
+  if (ign) for (const { p } of changed) if (L.ignoredByProject(ign, p)) skip.set(p.toLowerCase(), 'ignored');
+  const writes = L.readState(L.HOME).setupWrites || {};
+  for (const { p, deleted } of changed) {
+    const w = writes[p.toLowerCase()];
+    if (!deleted && w && w.sid !== (inp.session_id || '') && w.at >= snap.at && w.hash === L.printOf(p)) skip.set(p.toLowerCase(), `written by another session (${w.sid})`);
+  }
+  const hashOf = fp => (fp && String(fp.f).split('|')[2]) || null;
+  const unreviewed = new Set(L.pending(s).map(([f]) => f.toLowerCase()));
+  const known = new Set(Object.entries(before).filter(([p, v]) => v && !unreviewed.has(p.toLowerCase())).map(([, v]) => hashOf(v)).filter(Boolean));
+  for (const { p, deleted } of changed) {
+    if (deleted || before[p] || L.REVIEWABLE_CONFIG.test(p) || skip.has(p.toLowerCase())) continue;
+    const h = hashOf(after[p]) || L.printOf(p);
+    if (h && known.has(h)) skip.set(p.toLowerCase(), 'copy of existing content');
+  }
+  // Moves: content of a deleted file that reappears in a created file with the same extension.
+  const gone = changed.filter(x => x.deleted && !L.REVIEWABLE_CONFIG.test(x.p) && !skip.has(x.p.toLowerCase()) && hashOf(before[x.p]));
+  if (gone.length) {
+    const exts = new Set(gone.map(x => path.extname(x.p).toLowerCase()));
+    const createdBy = new Map(); // content hash -> created files
+    for (const p of created || []) {
+      if (!exts.has(path.extname(p).toLowerCase()) || Date.now() > PROBE_DEADLINE) continue;
+      const h = hashOf(after[p]) || L.printOf(p);
+      if (h) (createdBy.get(h) || createdBy.set(h, []).get(h)).push(p);
+    }
+    for (const { p } of gone) {
+      const to = (createdBy.get(hashOf(before[p])) || []).find(n => path.extname(n).toLowerCase() === path.extname(p).toLowerCase());
+      if (to) skip.set(p.toLowerCase(), `moved to ${to}`);
+    }
+  }
+  if (snap.repos) {
+    const tops = [...new Set(Object.keys(snap.repos).concat(repoTops || []))].sort((a, b) => b.length - a.length); // deepest first
+    const tests = new Map();
+    for (const { p } of changed) {
+      if (skip.has(p.toLowerCase())) continue;
+      const top = tops.find(t => p.toLowerCase().startsWith(t.toLowerCase() + path.sep));
+      if (!top || snap.repos[top] === false) continue;
+      // (a repo that can't be checked before PROBE_DEADLINE gets no exemption)
+      if (!tests.has(top)) tests.set(top, L.branchSwitch(top, snap.repos[top] || null, snap.at, PROBE_DEADLINE));
+      const t = tests.get(top);
+      if (t && t(p, !!before[p])) skip.set(p.toLowerCase(), `branch switch in ${top}`);
+    }
+  }
+  return skip;
+}
+
 // Record code changes made on disk during the current turn but not through Edit/Write (shell edits,
 // deletions, commits created in the turn) as pending changes. Called at Stop, and by the prompt hook
 // BEFORE it starts a new turn — so an interrupting user message can't erase the turn's discovery window.
@@ -100,6 +183,7 @@ function absorbTurnChanges(root, cfg, ctx = {}) {
   const prints = L.readTurnPrints(root, snap.turnStartedAt);
   ctx.turnHead = snap.turnHead;
   let disk = L.gitChangedCode(root, snap.turnStartedAt, snap.turnBaselineDeleted, prints, ctx);
+  const scanned = disk; // everything the scan saw: move detection needs the new files the bulk rule drops
   // Bulk rule: many NEW untracked files (copy, extract, generator) are not flagged one by one;
   // modified or deleted tracked files always are.
   // (Sensitive files, e.g. .set presets or risk/order code, are always kept.)
@@ -132,14 +216,21 @@ function absorbTurnChanges(root, cfg, ctx = {}) {
       disk.push({ ...d, byContent });
     }
   }
+  // Not tracked: files on the project's ignore list, and changes the turn didn't author (copies, moves).
+  const ign = ignoreRules(root, snap, disk.map(d => d.abs));
+  if (ign) disk = disk.filter(d => !ignoredIn(ign, snap, d.abs));
   if (!disk.length) return;
+  const notAuthored = L.gitNotAuthored(root, [...new Set(scanned.concat(disk))].filter(d => !d.commitOnly), prints, PROBE_DEADLINE);
   L.updateState(root, s => {
     const now = Date.now();
+    const skipped = [];
     for (const { abs: found, deleted, mtime, committed, byContent, commitOnly } of disk) {
       const abs = L.changeKey(s, found);
       const c = s.changes[abs];
       const reviewed = L.reviewedAtFor(s, c);
       const isPending = c && c.at > reviewed;
+      const why = !commitOnly && notAuthored.get(found.toLowerCase());
+      if (why && !isPending && !(c && c.openFindings)) { skipped.push([found, why]); continue; } // (a pending file is always tracked)
       // A newly observed deletion, or a disk modification newer than both the tracked change and the
       // last review, becomes a NEW change version that an earlier-started review cannot acknowledge.
       // A change found by content (old file time) is new unless it is exactly the last reviewed version;
@@ -169,7 +260,8 @@ function absorbTurnChanges(root, cfg, ctx = {}) {
         commit: isPending && c.committed ? L.keepCommit(c, true) : committed ? { committed: true, sinceRev: snap.turnHead || null } : {},
       });
     }
-  });
+    L.noteNotAuthored(s, skipped);
+  }, false, lockWait());
 }
 
 // Start a turn's discovery window: changes on disk from now on count as this turn's. First save what the
@@ -201,7 +293,7 @@ function startWindow(root, ps, carry) {
 }
 
 // A background shell command that may write files (anything but a read-only GPT run).
-const READONLY_GPT = /[\\/]gpt\.js["']?\s+(review|plan|idea|digest|research|testplan|status|stats|doctor)\b/i;
+const READONLY_GPT = /[\\/]gpt\.js["']?\s+(review|plan|idea|digest|research|testplan|score|status|stats|doctor)\b/i;
 
 const handlers = {
   'post-edit'(inp) {
@@ -210,6 +302,7 @@ const handlers = {
     if (!file) return out();
     const abs = path.resolve(inp.cwd || '.', file);
     if (!L.isCode(abs)) return out();
+    try { if (ignoredNow(rootOf(inp), abs)) return out(); } catch (e) { survived('ignore list', e); }
     // Non-bulk edits are counted here; replace_all edits are counted by pre-edit (occurrences x lines).
     const plain = inp.tool_name === 'MultiEdit' ? (ti.edits || []).filter(e => !e.replace_all)
       : inp.tool_name === 'Edit' && !ti.replace_all ? [ti] : [];
@@ -250,6 +343,27 @@ const handlers = {
         ...(c && c.openFindings ? { openFindings: c.openFindings } : {}),
       };
     });
+    // This setup's own file written here: another session's shell command running meanwhile must not take
+    // this write for its own change (see shellSkips). Registered only when the file holds what this tool
+    // wrote (Write: exactly its content; Edit: every replacement text), so bytes someone else wrote in
+    // between are never registered as this session's — and only in a project that reviews its changes
+    // (whatever this session's record holds is then reviewed here).
+    let wrote = false;
+    try {
+      const now = require('fs').readFileSync(abs);
+      if (inp.tool_name === 'Write') wrote = typeof ti.content === 'string' && now.equals(Buffer.from(ti.content, 'utf8'));
+      else if (inp.tool_name === 'Edit' || inp.tool_name === 'MultiEdit') {
+        const text = now.toString('utf8'), news = (inp.tool_name === 'Edit' ? [ti] : ti.edits || []).map(e => e.new_string || '').filter(Boolean);
+        wrote = news.length > 0 && news.every(n => text.includes(n));
+      }
+    } catch {}
+    if (wrote && isSetupFile(abs) && L.projectSettings(rootOf(inp)).review) try {
+      L.updateState(L.HOME, g => {
+        const w = g.setupWrites = g.setupWrites || {};
+        for (const [k, v] of Object.entries(w)) if (Date.now() - v.at > 86400000) delete w[k];
+        w[abs.toLowerCase()] = { sid: inp.session_id || '', hash, at: Date.now() };
+      });
+    } catch (e) { survived('setup write', e); }
     return out();
   },
 
@@ -262,6 +376,7 @@ const handlers = {
     if (!file) return out();
     const abs = path.resolve(inp.cwd || '.', file);
     if (!L.isCode(abs)) return out();
+    try { if (ignoredNow(rootOf(inp), abs)) return out(); } catch (e) { survived('ignore list', e); }
     try {
       const s = L.readState(rootOf(inp));
       const c = s.changes && s.changes[L.changeKey(s, abs)];
@@ -341,13 +456,16 @@ const handlers = {
   'pre-bash'(inp) {
     const root = rootOf(inp);
     if (!L.projectSettings(root).review) return out();
-    let paths = L.globalSetupFiles(), stats = null, all = true, walk = false;
+    let paths = L.globalSetupFiles(), stats = null, all = true, walk = false, repos;
     if (L.gitRoot(root)) paths = paths.concat(L.watchedIgnored(root, L.readState(root).turnStartedAt));
     else {
       const snap = L.codeSnapshot(root, 5000, true);
       stats = snap.files; all = Object.keys(snap.files).length <= 1000;
       paths = paths.concat(Object.keys(snap.files));
       walk = !snap.truncated;
+      // A command that may switch branches in a nested repo: each repo's HEAD and dirty files beforehand.
+      const cmd = String((inp.tool_input || {}).command || '');
+      if (/\bgit\b/i.test(cmd) && /\b(checkout|switch|pull|merge|rebase|clone)\b/i.test(cmd)) repos = L.repoStates(snap.repos, T0 + 8000);
       if (snap.truncated) {
         const st = L.readState(root);
         if (!st.shellScanPartial || Date.now() - st.shellScanPartial.at > 86400000) {
@@ -356,7 +474,7 @@ const handlers = {
       }
     }
     const files = L.shellPrints([...new Set(paths)], stats, all);
-    require('fs').writeFileSync(`${L.statePath(root)}.bash-${inp.tool_use_id || 'x'}.json`, JSON.stringify({ at: Date.now(), walk, all, files }));
+    require('fs').writeFileSync(`${L.statePath(root)}.bash-${inp.tool_use_id || 'x'}.json`, JSON.stringify({ at: Date.now(), walk, all, files, repos }));
     return out();
   },
 
@@ -377,10 +495,12 @@ const handlers = {
     let after;
     // same file set rule and hashing policy as the first snapshot, so untouched files compare equal
     const walk = snapBefore.walk !== undefined ? snapBefore.walk : !snapBefore.git; // (older snapshot format)
+    let repoTops = [];
     if (!walk) after = L.shellPrints(Object.keys(before), null, snapBefore.all !== false);
     else {
       const snap = L.codeSnapshot(root, 5000, true);
       after = L.shellPrints([...new Set(L.globalSetupFiles().concat(Object.keys(snap.files)))], snap.files, snapBefore.all);
+      repoTops = snap.repos;
     }
     const cfg = L.loadConfig();
     const created = Object.keys(after).filter(p => after[p] && !before[p]);
@@ -395,12 +515,17 @@ const handlers = {
       changed = changed.concat(created.filter(p => L.isSensitiveFile(p)).map(p => ({ p, deleted: false })));
     } else changed = changed.concat(created.map(p => ({ p, deleted: false })));
     if (!changed.length) return out();
+    let skip = new Map();
+    try { skip = shellSkips(root, inp, snapBefore, before, after, changed, repoTops, created); } catch (e) { survived('not-authored check', e); }
     L.updateState(root, s => {
+      const skipped = [];
       for (const { p: found, deleted } of changed) {
         const rec = L.changeKey(s, found), p = found;
         const c = s.changes[rec];
         const reviewed = L.reviewedAtFor(s, c);
         const pending = c && c.at > reviewed;
+        const why = skip.get(found.toLowerCase());
+        if (why && !pending && !(c && c.openFindings)) { if (why !== 'ignored') skipped.push([found, why]); continue; } // (a pending file is always tracked)
         // file time unreliable: not after the last review, or not after its own previous time (a copy that
         // kept its source's time)
         const oldTime = !deleted && (after[p].m <= reviewed || (before[p] && after[p].m <= before[p].m));
@@ -415,7 +540,8 @@ const handlers = {
           at: deleted || oldTime ? contentTime(s, p, Date.now()) : Math.min(after[p].m, Date.now()),
         });
       }
-    });
+      L.noteNotAuthored(s, skipped);
+    }, false, lockWait());
     return out();
   },
 
@@ -465,7 +591,14 @@ const handlers = {
       const list = allPending.filter(e => !coveredByRunning(e));
       let pendingList = null, warn = 0;
       if (list.length && L.isSignificant(list, cfg)) {
-        if (s.stopBlockedTurn === turn) warn = list.length; else { s.stopBlockedTurn = turn; pendingList = list; }
+        // Already blocked this turn: a one-line note — only when the pending set (files and their content)
+        // differs from the one the last note named, so it isn't repeated at every Stop (a file whose old file
+        // time makes each scan re-date it keeps its content, so it doesn't count as new).
+        // (a file too big to hash: its size and file time, which a re-dating scan doesn't change either)
+        const version = (f, c) => { if (c.deleted) return 'deleted'; const h = L.printOf(f); if (h) return h; try { const st = require('fs').statSync(f); return `${st.size}:${st.mtimeMs}`; } catch { return c.at; } };
+        const sig = require('crypto').createHash('sha1').update(list.map(([f, c]) => `${f.toLowerCase()}@${version(f, c)}`).sort().join('|')).digest('hex').slice(0, 16);
+        if (s.stopBlockedTurn !== turn) { s.stopBlockedTurn = turn; pendingList = list; s.pendingNoteSig = sig; }
+        else if (s.pendingNoteSig !== sig) { s.pendingNoteSig = sig; warn = list.length; }
       }
       if (!findings && !pendingList) {
         // The turn ends here: its discovery window closes, so edits the user makes before the next prompt

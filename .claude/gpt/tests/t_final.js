@@ -15,18 +15,16 @@ gate('session', b); gate('prompt', { ...b, prompt: 'go' });
 // shell edits A and commits it; B left dirty
 fs.writeFileSync(path.join(G, 'a.js'), 'const a = 2; // committed shell change\n'); git('commit', '-qam', 'a'); fs.writeFileSync(path.join(G, 'b.js'), 'const b = 2;\n');
 const A = path.join(G, 'a.js');
-{ const m0 = new Function('L','root','path','fs','spawnSync','stamp','NULL_DEV', fs.readFileSync(__G + 'gpt.js','utf8').slice(fs.readFileSync(__G + 'gpt.js','utf8').indexOf('function noIndexDiff'), fs.readFileSync(__G + 'gpt.js','utf8').indexOf('// Build/test/compile output')) + '; return reviewMaterial;')(L, G, path, fs, spawnSync, () => 'y' + Date.now(), 'NUL'); const mm = m0([A, path.join(G, 'b.js')]); ok(/committed shell change/.test(mm.text), 'BEFORE Stop: committed A shows its real diff'); fs.rmSync(mm.snapDir, { recursive: true, force: true }); }
+const K = require('./bridge-kit').at(G);
+{ const mm = K.review.reviewMaterial([A, path.join(G, 'b.js')]); ok(/committed shell change/.test(mm.text), 'BEFORE Stop: committed A shows its real diff'); fs.rmSync(mm.snapDir, { recursive: true, force: true }); }
 gate('stop', b);
 ok(L.readState(G).changes[A] && L.readState(G).changes[A].sinceRev, 'committed change records the turn-start revision');
 // build review material exactly as gpt.js does (no GPT call)
-const src = fs.readFileSync(__G + 'gpt.js', 'utf8');
-const rm = new Function('L', 'root', 'path', 'fs', 'spawnSync', 'stamp', 'NULL_DEV',
-  src.slice(src.indexOf('function noIndexDiff'), src.indexOf('// Build/test/compile output')) + '; return reviewMaterial;')(L, G, path, fs, spawnSync, () => 'x' + Date.now(), 'NUL');
-const mat = rm([A, path.join(G, 'b.js')]);
+const mat = K.review.reviewMaterial([A, path.join(G, 'b.js')]);
 ok(/committed shell change/.test(mat.text), 'committed file A shows its real diff in a mixed review');
 fs.rmSync(mat.snapDir, { recursive: true, force: true });
 // restored file: reviewed deletion, then restore + review -> deleted flag cleared
-const mr = new Function('L', 'root', 'path', 'fs', src.slice(src.indexOf('function markReviewed'), src.indexOf('try { L.cleanup(); } catch {}')) + '; return markReviewed;')(L, G, path, fs);
+const mr = K.review.markReviewed;
 L.updateState(G, s => { s.changes[A] = { lines: 5, at: Date.now() - 5000, deleted: true }; });
 mr('gpt', Date.now(), [A], [], { verdict: 'NO_ISSUES', log: 'x', snaps: [{ abs: A, snap: A }] });
 ok(L.readState(G).changes[A].deleted === false, 'review of a restored file clears its deleted flag');

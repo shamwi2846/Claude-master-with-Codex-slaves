@@ -3,11 +3,11 @@ const __G = require('path').join(__dirname, '..').replace(/\\/g, '/') + '/'; // 
 const path = require('path'), fs = require('fs'), os = require('os'), { spawnSync } = require('child_process');
 const L = require(__G + 'lib.js');
 const ok = (c, m) => console.log(c ? 'PASS' : 'FAIL', m);
-const src = fs.readFileSync(__G + 'gpt.js', 'utf8');
+const K = require('./bridge-kit');
 
 // 1. locations with spaces / links / several refs
 const root = 'C:\\Users\\Shari\\Desktop\\T3 MQL5\\MQL5 TOOLS';
-const ff = new Function('path', 'root', src.slice(src.indexOf('// File paths in one'), src.indexOf('// Bug diagnosis')) + '; return findingFiles;')(path, root);
+const ff = K.at(root).review.findingFiles;
 const a = path.join(root, 'src', 'a', 'utils.js'), b = path.join(root, 'src', 'b', 'utils.js');
 const t = (loc) => { const r = ff(`VERDICT: ISSUES_FOUND\n### [HIGH] x\n- Location: ${loc}\n- Failure: y`, { map: [] }, [a, b]); return r ? [...r].map(x => x.includes('\\a\\') ? 'a' : 'b').sort().join(',') : 'ALL'; };
 ok(t(`${a}:20`) === 'a', 'absolute path with spaces');
@@ -17,7 +17,7 @@ ok(t(`${a}:20, ${b}:7`) === 'a,b', 'two paths with spaces on one line');
 ok(t('utils.js:3') === 'ALL', 'ambiguous basename stays safe (all open)');
 
 // 2. metadata with U+2028 in a file name
-const mf = new Function(src.slice(src.indexOf('function metaField'), src.indexOf('function lessonsBlock')) + '; return metaField;')();
+const mf = K.review.metaField;
 const files = ['C:/x/a\u2028b.js', 'C:/x/c.js'];
 const log = `- Round: 1\n- Files: ${JSON.stringify(files)}\n- Task: t\n`;
 ok(JSON.stringify(JSON.parse(mf(log, 'Files'))) === JSON.stringify(files), 'Files metadata survives U+2028');

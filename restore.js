@@ -13,9 +13,13 @@ const src = !fs.existsSync(path.join(__dirname, '.claude')) && fs.existsSync(pat
   ? path.join(__dirname, '.claude.prev') : path.join(__dirname, '.claude');
 if (src.endsWith('.prev')) console.log('note: .claude is missing (an interrupted release) — restoring the previous release from .claude.prev');
 const dst = path.join(os.homedir(), '.claude');
-const files = ['CLAUDE.md', 'agents/fallback-reviewer.md', 'gpt/config.json', 'gpt/gpt.js', 'gpt/gate.js', 'gpt/lib.js', 'gpt/REFERENCE.md']
-  // the regression checks and release script (gpt/tests), when the backup has them
-  .concat((() => { try { return fs.readdirSync(path.join(src, 'gpt', 'tests')).filter(n => n.endsWith('.js')).map(n => `gpt/tests/${n}`); } catch { return []; } })());
+// The .js files of a backup folder ([] when the backup has none, e.g. one made before that folder existed).
+const scripts = dir => { try { return fs.readdirSync(path.join(src, dir)).filter(n => n.endsWith('.js')).map(n => `${dir}/${n}`); } catch { return []; } };
+// Written in this order: the bridge modules (gpt/bridge) and lib.js before gpt.js and gate.js, which need
+// them — a restore that stops midway never leaves a gpt.js without its modules. Then the regression checks
+// and release script (gpt/tests), when the backup has them.
+const files = ['CLAUDE.md', 'agents/fallback-reviewer.md', 'gpt/config.json', ...scripts('gpt/bridge'), 'gpt/lib.js', 'gpt/gpt.js', 'gpt/gate.js', 'gpt/REFERENCE.md']
+  .concat(scripts('gpt/tests'));
 
 function fail(msg) { console.error('Restore aborted, nothing was changed: ' + msg); process.exit(1); }
 function readJson(f) {

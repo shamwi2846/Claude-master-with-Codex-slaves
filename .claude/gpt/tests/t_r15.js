@@ -3,8 +3,6 @@ const __G = require('path').join(__dirname, '..').replace(/\\/g, '/') + '/'; // 
 const path = require('path'), fs = require('fs'), os = require('os'), { spawnSync } = require('child_process');
 const L = require(__G + 'lib.js');
 const ok = (c, m) => console.log(c ? 'PASS' : 'FAIL', m);
-const src = fs.readFileSync(__G + 'gpt.js', 'utf8');
-const cut = (a, z) => src.slice(src.indexOf(a), src.indexOf(z, src.indexOf(a)));
 
 // invalid optional settings without a default are dropped, never crash the loader (runs in the test profile)
 const cf = path.join(L.HOME, 'config.json'), orig = fs.readFileSync(cf, 'utf8');
@@ -15,7 +13,7 @@ fs.writeFileSync(cf, orig);
 ok(!threw && cfg.problems.some(p => /codexJs/.test(p)) && cfg.problems.some(p => /metaeditorPath/.test(p)) && !('metaeditorPath' in cfg), 'invalid codexJs/metaeditorPath: dropped and reported, no crash');
 
 // MQL source fingerprint covers included files
-const mqlSources = new Function('fs', 'path', 'require', cut('function mqlSources', '// MQL5 code gets a trading') + '; return mqlSources;')(fs, path, require);
+const mqlSources = require('./bridge-kit').evidence.mqlSources;
 const M = path.join(os.homedir(), 'gpt-final', 'MQL5');
 fs.mkdirSync(path.join(M, 'Include', 'Trade'), { recursive: true }); fs.mkdirSync(path.join(M, 'Experts'), { recursive: true });
 fs.writeFileSync(path.join(M, 'Include', 'Trade', 'Lib.mqh'), 'int Lots(){return 1;}\n');

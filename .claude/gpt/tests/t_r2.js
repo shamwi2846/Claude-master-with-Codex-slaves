@@ -25,8 +25,7 @@ gate('prompt', { ...b, prompt: 'interrupt' });
 const K = path.join(G, 'k.js'), c = L.readState(G).changes[K];
 ok(c && c.at > L.reviewedAtFor(L.readState(G), c), 'shell change survives a user interruption');
 // 3. relative finding location maps to the right file
-const src = fs.readFileSync(__G + 'gpt.js', 'utf8');
-const ff = new Function('path', 'root', src.slice(src.indexOf('// File paths in one'), src.indexOf('// Bug diagnosis')) + '; return findingFiles;')(path, G);
+const ff = require('./bridge-kit').at(G).review.findingFiles;
 const a = path.join(G, 'src', 'a', 'utils.js'), bb = path.join(G, 'src', 'b', 'utils.js');
 const r = ff('VERDICT: ISSUES_FOUND\n### [HIGH] x\n- Location: src/a/utils.js:20', { map: [] }, [a, bb]);
 ok(r && r.size === 1 && r.has(a.toLowerCase()), 'relative location maps only src/a/utils.js');

@@ -16,11 +16,13 @@
 //   turnHead, turnBaselineDeleted   git HEAD / deletions at window start; turnClosedAt: an allowed Stop
 //   bgWriterTurn         window in which a possibly-writing background command started
 //   preWrite             pre-edit snapshots per tool call; planReviewedAt/Text; gptUnavailableAt/Reason;
-//                        shellScanPartial; lastBulkShell
+//                        shellScanPartial; lastBulkShell; pendingNoteSig (the pending set the last Stop note named)
+//   notAuthored          [{file, why, at}] newest 50 disk changes not tracked: copies, moves, branch switches
 //   Side files: <key>.json.turn.json (turn-start fingerprints), <key>.json.bash-<tool id>.json (shell snapshots);
 //   baseline/<key>/ (reviewed versions); logs/<project>/ (logs, answers, .frozen round copies, index.tsv).
 // Global state (HOME): sessionRoots, computerLock, claudeCuUntil/LastUse/Session, limitUntil, seenFields,
-//   reminders, doctor cache, lastCleanup. Writers: gate.js (hooks) and gpt.js; both read everything.
+//   reminders, doctor cache, lastCleanup, setupWrites (this setup's files written via Edit/Write: session,
+//   content, time). Writers: gate.js (hooks) and gpt.js; both read everything.
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
@@ -49,6 +51,8 @@ const SENSITIVE_PATH = {
   test(p) {
     // MT5 presets (.set) hold live trading parameters (risk %, lots, SL/TP): a one-line change matters.
     if (/\.set$/i.test(p)) return true;
+    // A project's review switches and ignore list: one line can switch reviews off.
+    if (/[\\/]\.claude[\\/]gpt\.json$/i.test(p)) return true;
     // Every folder below the user's home (so src/auth/providers/x.js counts) plus the file name; the
     // home path itself (e.g. a user named "admin") never makes everything sensitive.
     let abs = path.resolve(p);
@@ -320,7 +324,8 @@ function findRoot(dir) {
 // Per-project switches: <project or ancestor>/.claude/gpt.json. Unknown or invalid values are ignored
 // (the default applies) and listed in `_problems` (shown by `gpt.js status`).
 const PROJECT_RULES = { review: v => typeof v === 'boolean', plans: v => typeof v === 'boolean', ideas: v => typeof v === 'boolean',
-  computerUse: v => v === 'gpt' || v === 'claude', effort: v => v === 'auto' || EFFORTS.includes(v) };
+  computerUse: v => v === 'gpt' || v === 'claude', effort: v => v === 'auto' || EFFORTS.includes(v),
+  ignore: v => Array.isArray(v) && v.every(x => typeof x === 'string' && x.trim()) };
 function projectSettings(root) {
   let dir = path.resolve(root);
   for (;;) {
@@ -342,6 +347,37 @@ function projectSettings(root) {
     dir = up;
   }
   return { ...PROJECT_DEFAULTS };
+}
+
+// Per-project `ignore` globs (.claude/gpt.json), e.g. ["evidence/**", "app/server.mjs"]: files the hooks
+// don't track (generated reports, bundles). Patterns are relative to the folder that holds .claude/gpt.json;
+// "**" spans folders, "*" and "?" stay within one name, a pattern without "/" matches that name in any
+// folder, and a pattern that matches a folder covers everything in it. Never ignored: files outside that
+// folder, and tool config (.claude/, .codex/ — the switches themselves). The hooks also stop applying the
+// list while gpt.json itself has an unreviewed change (see gate.js).
+function globRegex(g) {
+  let pat = g.trim().replace(/\\/g, '/').replace(/^\.?\//, '').replace(/\/$/, '');
+  const anyDir = !pat.includes('/');
+  let re = '';
+  for (let i = 0; i < pat.length; i++) {
+    const ch = pat[i];
+    if (ch === '*' && pat[i + 1] === '*') {
+      if (pat[i + 2] === '/') { re += '(?:.*/)?'; i += 2; } else { re += '.*'; i += 1; }
+    } else if (ch === '*') re += '[^/]*';
+    else if (ch === '?') re += '[^/]';
+    else re += ch.replace(/[.+^${}()|[\]\\]/g, '\\$&');
+  }
+  return new RegExp(`^${anyDir ? '(?:.*/)?' : ''}${re}$`, 'i');
+}
+function ignoredByProject(ps, abs) {
+  if (!ps || !ps._file || !Array.isArray(ps.ignore) || !ps.ignore.length) return false;
+  const rel = path.relative(path.dirname(path.dirname(ps._file)), path.resolve(abs)).replace(/\\/g, '/');
+  if (!rel || rel.startsWith('../') || rel === '..' || path.isAbsolute(rel) || /(^|\/)\.(claude|codex)\//i.test(rel)) return false;
+  if (!ps._ignoreRe) Object.defineProperty(ps, '_ignoreRe', { value: ps.ignore.map(globRegex) }); // (not saved/printed)
+  const res = ps._ignoreRe;
+  // the file itself, or one of its folders
+  const parts = rel.split('/'), cands = parts.map((_, i) => parts.slice(0, i + 1).join('/'));
+  return res.some(re => cands.some(c => re.test(c)));
 }
 
 // Config that executes or controls behaviour is reviewed like code.
@@ -576,6 +612,7 @@ const CLAUDE_DIR = path.join(os.homedir(), '.claude').toLowerCase() + path.sep;
 function globalSetupFiles() {
   const c = path.join(os.homedir(), '.claude');
   const out = ['gpt.js', 'gate.js', 'lib.js', 'config.json'].map(n => path.join(HOME, n)).concat(path.join(c, 'settings.json'));
+  try { for (const n of fs.readdirSync(path.join(HOME, 'bridge'))) if (n.endsWith('.js')) out.push(path.join(HOME, 'bridge', n)); } catch {}
   try { for (const n of fs.readdirSync(path.join(c, 'agents'))) out.push(path.join(c, 'agents', n)); } catch {}
   return out;
 }
@@ -672,13 +709,14 @@ function sameAsBaseline(root, abs) {
 }
 
 // Reviewable files under `root` -> mtime (`detail`: {m: mtime, s: size}), bounded (used where git can't
-// tell us what changed).
+// tell us what changed). `repos`: the git repositories found on the way (folders holding a .git entry).
 function codeSnapshot(root, budget = 5000, detail = false) {
-  const out = {};
+  const out = {}, repos = [];
   let truncated = false;
   (function walk(d, depth) {
     let names = []; try { names = fs.readdirSync(d); } catch { return; }
     for (const n of names) {
+      if (n === '.git') { repos.push(d); continue; }
       if (/^(node_modules|\.git|\.venv|venv|__pycache__|dist|build|\.next|target)$/.test(n)) continue;
       if (--budget < 0) { truncated = true; return; }
       const p = path.join(d, n);
@@ -687,7 +725,172 @@ function codeSnapshot(root, budget = 5000, detail = false) {
       else if (st.isFile() && isCode(p)) out[p] = detail ? { m: st.mtimeMs, s: st.size } : st.mtimeMs;
     }
   })(root, 0);
-  return { files: out, truncated };
+  return { files: out, truncated, repos };
+}
+
+// ---- Changes on disk the turn's author didn't write: they are not tracked, only listed (notAuthored).
+// Config destinations stay changes (a copied preset or settings file takes effect where it lands), and so
+// does moving config away; a file that already has a pending change is always tracked (callers check).
+
+// A git call bounded by an absolute deadline (hooks must finish in time); null when no time is left.
+function gitBy(deadline, cwd, args, input) {
+  const left = Math.min(8000, deadline - Date.now());
+  return left < 300 ? null : spawnSync('git', args, { cwd, encoding: 'utf8', input, timeout: left, maxBuffer: 100 * 1024 * 1024 });
+}
+
+// Git projects (Stop's scan): a NEW file (absent at turn start, not in HEAD) whose content is already in HEAD
+// or was in the working tree at turn start is a copy; a deleted file whose HEAD/turn-start content reappears
+// in a new file with the same extension was moved (helper.js -> helper.txt stays a deletion). Without the
+// turn-start fingerprints nothing is exempt. `disk` must hold every new file the scan saw (also those the
+// bulk rule drops: they can be a move's destination). Map(lower-case path -> why).
+function gitNotAuthored(root, disk, prints, deadline = Date.now() + 8000) {
+  const out = new Map();
+  const top = gitRoot(root);
+  // (only new untracked files can be copies, and only a deletion can be the other half of a move)
+  if (!top || !prints || !disk.some(d => d.deleted || d.untracked)) return out;
+  const git = (args, input) => gitBy(deadline, top, args, input);
+  const rel = abs => path.relative(top, abs).replace(/\\/g, '/');
+  const inHead = new Map(); // lower-case repo path -> blob id
+  const ls = git(['ls-tree', '-r', '-z', '--full-tree', 'HEAD']);
+  if (!ls) return out;
+  if (ls.status === 0) for (const e of ls.stdout.split('\0')) { const m = e.match(/^\d+ blob ([0-9a-f]+)\t(.+)$/s); if (m) inHead.set(m[2].toLowerCase(), m[1]); }
+  else if (gitHead(top)) { gitFailed(`git ls-tree in ${top}`, ls); return out; }
+  const blobs = new Set(inHead.values());
+  const dirty = lowerKeys(prints.dirty);
+  const startPrints = new Set([...dirty.values()].filter(Boolean));
+  // new = not in HEAD and not in the working tree at turn start (an overwritten untracked draft is a change)
+  const fresh = disk.filter(d => !d.deleted && !inHead.has(rel(d.abs).toLowerCase()) && !dirty.has(d.abs.toLowerCase()) && !/[\r\n]/.test(d.abs));
+  const newBy = new Map(); // blob id / content hash -> new files
+  if (fresh.length) {
+    const ids = git(['hash-object', '--stdin-paths'], fresh.map(d => rel(d.abs)).join('\n') + '\n');
+    if (!ids) return out;
+    const idList = ids.status === 0 ? ids.stdout.trim().split('\n') : [];
+    if (ids.status !== 0) gitFailed(`git hash-object in ${top}`, ids);
+    fresh.forEach((d, i) => {
+      const id = idList.length === fresh.length ? idList[i] : null, p = printOf(d.abs);
+      for (const k of [id, p]) if (k) (newBy.get(k) || newBy.set(k, []).get(k)).push(d.abs);
+      if (!REVIEWABLE_CONFIG.test(d.abs) && ((id && blobs.has(id)) || (p && startPrints.has(p)))) out.set(d.abs.toLowerCase(), 'copy of existing content');
+    });
+  }
+  for (const d of disk) {
+    if (!d.deleted || REVIEWABLE_CONFIG.test(d.abs)) continue;
+    const k = d.abs.toLowerCase();
+    const before = dirty.has(k) ? dirty.get(k) : inHead.get(rel(d.abs).toLowerCase()); // turn-start content
+    const to = before && (newBy.get(before) || []).find(n => path.extname(n).toLowerCase() === path.extname(d.abs).toLowerCase());
+    if (to) out.set(k, `moved to ${to}`);
+  }
+  return out;
+}
+
+// Paths (lower-case, repo-relative) in `git status --porcelain -z` output, both sides of renames/copies.
+function statusPaths(out) {
+  const set = new Set(), parts = String(out || '').split('\0');
+  for (let i = 0; i < parts.length; i++) {
+    const p = parts[i];
+    if (p.length < 4) continue;
+    set.add(p.slice(3).toLowerCase());
+    if (p[0] === 'R' || p[0] === 'C') { i++; if (parts[i]) set.add(parts[i].toLowerCase()); }
+  }
+  return set;
+}
+// Nested git repositories in a non-git session folder, before a shell command that may switch branches:
+// HEAD and dirty files of each (false = unknown: no exemption for that repo). At most 20 repos, all done by
+// `deadline` (the shell hooks have 15 s).
+function repoStates(tops, deadline) {
+  const out = {};
+  tops.forEach((top, i) => {
+    const st = i < 20 && gitBy(deadline, top, ['status', '--porcelain', '-z', '-uall']);
+    const head = st && st.status === 0 && gitBy(deadline, top, ['rev-parse', 'HEAD']);
+    out[top] = head ? { head: head.status === 0 ? head.stdout.trim() : null, dirty: [...statusPaths(st.stdout)] } : false;
+  });
+  return out;
+}
+// After that command: a test (abs, existed before the command) for files a branch switch changed in repo
+// `top` — tracked and clean before (they equalled the old HEAD; an untracked or git-ignored file a checkout
+// overwrote is a change), clean after (they equal the new HEAD) and part of either tree. Only when HEAD moved
+// and every HEAD reflog entry since `since` is a checkout, pull, merge or rebase (a repo that didn't exist
+// before — `pre` null — only a clone): never a commit, reset, cherry-pick or revert, which can carry the
+// author's own changes or discard work. null = nothing qualifies (also when `deadline` is too close).
+function branchSwitch(top, pre, since, deadline = Date.now() + 8000) {
+  const git = (...a) => gitBy(deadline, top, a);
+  const h = git('rev-parse', 'HEAD');
+  const head = h && h.status === 0 ? h.stdout.trim() : null;
+  if (!head || (pre && pre.head === head)) return null;
+  const log = git('reflog', '--date=unix', '--format=%gd%x09%gs', '-n', '100');
+  if (!log || log.status !== 0) return null;
+  const recent = log.stdout.split('\n').filter(Boolean).map(l => l.split('\t'))
+    .filter(([gd]) => Number(((gd || '').match(/\{(\d+)\}/) || [])[1]) * 1000 >= since - 1000);
+  const allowed = pre ? /^(checkout|pull|merge|rebase)\b/i : /^(clone|checkout)\b/i;
+  if (!recent.length || !recent.every(([, subj]) => allowed.test(subj || ''))) return null;
+  const st = git('status', '--porcelain', '-z', '-uall');
+  if (!st || st.status !== 0) return null;
+  const dirtyNow = statusPaths(st.stdout), preDirty = new Set((pre && pre.dirty) || []);
+  const tree = rev => { const r = git('ls-tree', '-r', '-z', '--name-only', '--full-tree', rev); return r && r.status === 0 ? new Set(r.stdout.split('\0').filter(Boolean).map(x => x.toLowerCase())) : null; };
+  const newTree = tree(head), oldTree = pre && pre.head ? tree(pre.head) : new Set();
+  if (!newTree || !oldTree) return null;
+  return (abs, existed) => {
+    const rel = path.relative(top, abs).replace(/\\/g, '/').toLowerCase();
+    return !rel.startsWith('../') && !preDirty.has(rel) && !dirtyNow.has(rel) && (newTree.has(rel) || oldTree.has(rel)) && (!existed || oldTree.has(rel));
+  };
+}
+// Is `file` (a project's .claude/gpt.json) pending review or carrying open findings in any known session
+// project? Another session may have changed it (one opened in a parent folder, or anywhere else, editing it
+// by its full path): its ignore list must not take effect before that change is reviewed. An unreadable
+// state counts. (Sessions of the last 14 days — a handful of small state files.)
+function pendingAnywhere(file) {
+  const k = path.resolve(file).toLowerCase();
+  const roots = new Set(Object.values(readState(HOME).sessionRoots || {}).map(v => v && v.root && norm(v.root)).filter(Boolean));
+  for (const r of roots) {
+    const s = readState(r);
+    if (s._unreadable) return true;
+    const e = Object.entries(s.changes || {}).find(([f]) => f.toLowerCase() === k);
+    if (e && (e[1].at > reviewedAtFor(s, e[1]) || e[1].openFindings)) return true;
+  }
+  return false;
+}
+
+// Record changes that are not tracked (newest 50), for `gpt.js status`. items: [[file, why]].
+function noteNotAuthored(s, items) {
+  const listed = new Set((s.notAuthored || []).map(x => `${x.file.toLowerCase()}|${x.why}`)); // (later scans see it again)
+  const add = items.filter(([file, why]) => !listed.has(`${file.toLowerCase()}|${why}`));
+  if (add.length) s.notAuthored = (s.notAuthored || []).concat(add.map(([file, why]) => ({ file, why, at: Date.now() }))).slice(-50);
+}
+
+// A review's acknowledgement, shared with other projects that track the same files (e.g. a session in a
+// folder and one in its sub-repo): each of their PENDING records whose file holds exactly the acknowledged
+// content gets the same acknowledgement (and that content as its baseline, unless a later review set one).
+// Their own open findings stay. One project's lock at a time (taken strictly: a busy or unreadable project
+// is skipped); the file is re-hashed under that lock. items: [{ abs, hash (of the acknowledged content,
+// taken when it was acknowledged; 'absent' = deleted), snap (copy of it; null = absent), status }].
+// Returns how many records were acknowledged.
+function shareReceipt(fromRoot, items, at) {
+  const want = new Map(items.map(x => [path.resolve(x.abs).toLowerCase(), x]));
+  const own = path.basename(statePath(fromRoot)).toLowerCase();
+  let names = [];
+  try { names = fs.readdirSync(STATE_DIR).filter(n => /^[0-9a-f]{12}\.json$/i.test(n) && n.toLowerCase() !== own); } catch { return 0; }
+  let shared = 0;
+  for (const n of names) {
+    let s; try { s = JSON.parse(fs.readFileSync(path.join(STATE_DIR, n), 'utf8')); } catch { continue; }
+    if (!s || !s.root || !s.changes || !Object.entries(s.changes).some(([f, c]) => want.has(f.toLowerCase()) && c.at > reviewedAtFor(s, c))) continue;
+    try {
+      updateState(s.root, st => {
+        for (const [f, c] of Object.entries(st.changes)) {
+          const x = want.get(f.toLowerCase());
+          if (!x || !(c.at > reviewedAtFor(st, c))) continue;
+          let h; try { h = fileHash(f); } catch { continue; }
+          if (h !== x.hash) continue;
+          c.reviewedAt = Math.max(c.reviewedAt || 0, c.at, at);
+          c.reviewStatus = c.openFindings ? 'findings' : x.status;
+          c.sharedFrom = path.resolve(fromRoot);
+          // (no copy of exactly that content left: the previous baseline stays)
+          let base; try { base = h === 'absent' ? null : x.snap && fileHash(x.snap) === x.hash ? x.snap : undefined; } catch {}
+          if (base !== undefined && (c.baseAt || 0) <= at) try { setBaseline(st.root, f, base); c.baseAt = at; c.deleted = h === 'absent'; delete c.basePre; } catch {}
+          shared++;
+        }
+      }, true);
+    } catch {}
+  }
+  return shared;
 }
 
 // Sensitive by name OR by content (e.g. a generic "helpers.js" that calls OrderSend). Reads at most 1 MB.
@@ -896,4 +1099,5 @@ module.exports = {
   projectSettings, isCode, countLines, pending, reviewedAtFor, isSignificant, gitStatus, gitDeleted, gitChangedCode, minutesAgo,
   SENSITIVE_PATH, SENSITIVE_CONTENT, docTargetProblem, fileHash,
   codeSnapshot, statePath, pidAlive, isSensitiveFile, keepCommit, printOf, saveTurnPrints, readTurnPrints, changedByContentThisTurn, validateConfig, CONFIG_DEFAULTS, hookIssue, hookTime, recentHookIssues, HOOK_TIMES, sameAsBaseline, differsFromRev, shellPrints, watchedIgnored, globalSetupFiles, changeKey, gitHead, gitCommittedSince, sessionRoot, knownSessionRoot, captureBaseline, setBaseline, baselineOf, lessonsFile, readLessons, quickChecks, cleanup, textSimilarity, HOOK_FIELDS,
+  REVIEWABLE_CONFIG, ignoredByProject, gitNotAuthored, repoStates, branchSwitch, noteNotAuthored, shareReceipt, pendingAnywhere,
 };

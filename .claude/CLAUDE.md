@@ -12,7 +12,7 @@
 
 **Calling GPT.**
 - Every call goes through `node "C:/Users/Shari/.claude/gpt/gpt.js" <command>` (below: `gpt.js`). Exact flags, exit codes and recipes are in `~/.claude/gpt/REFERENCE.md`; read it when you need them.
-- **Background:** run reviews, plans, investigations and computer use with `run_in_background: true`.
+- **Background:** run reviews, plans, investigations and computer use with `run_in_background: true`. You are notified when a background run finishes: never poll or sleep-wait for it — do independent work meanwhile, or end the turn.
 - **Parallel agents:** split work across several in parallel whenever that finishes faster; you decide how many.
   - Give each review its own `--focus` and **non-overlapping `--files`**, and give one of them the interfaces between areas.
   - Only one `computer` agent runs at a time.
@@ -23,6 +23,7 @@
 - **Finished code (hook-enforced):** run `gpt.js review --task "<goal + user requirements>"` before calling a coding task done. Add `--files` for deletions or for changes made outside Edit/Write.
 - **Plans (hook-enforced):** run `gpt.js plan --file <plan.md>` before ExitPlanMode, and for substantial plans written in chat.
 - **Non-trivial ideas or advice:** run `gpt.js idea` first.
+- **Scoring rounds** (rate the project against a rubric): `gpt.js score --file <rubric.md>`, not `idea`. Add `--files` to have the scored files reviewed too.
 - **Always review:** security, auth, payments, trading logic (orders, positions, lots, SL/TP, risk), data deletion or migrations, hard-to-undo design, and a bug fix that failed twice.
 - **Skip:** trivial edits and pure Q&A.
 - **GPT reads for you:**
@@ -63,6 +64,9 @@ Never block the user's work.
 1. **Avoid the screen.** Use files, logs, CLI tools and APIs first, then browser tools. For MT5, read `MQL5/Logs`, terminal `Logs`, tester reports, exports and `.set`/`.ini` files directly.
 2. **Delegate screen control to GPT** with `gpt.js computer --task "..."`. A hook blocks Claude's own computer-use tools unless you run `gpt.js allow-claude-cu --reason "..."`, and only do that when delegating is clearly worse.
 3. **Never trade or handle credentials.** Neither model trades, moves money or enters credentials.
+
+## MetaTrader Strategy Tester (standing confirmation)
+The user confirmed on 2026-10-15 that the MetaTrader 5 accounts saved on this PC are not important. Treat this as the explicit confirmation the `mql5-coding` skill requires: run `Invoke-Mt5TesterSmoke.ps1 -Execute` (and project-profile or scenario-batch tester runs) with `-AcknowledgeSavedAccountRisk` without asking. Still never place trades, move money or enter credentials. If the user adds a real-money account, ask again.
 
 ## Documents
 GPT writes medium and long documents with `gpt.js write`, and Claude reviews the diff, then applies, revises or discards. Claude does tiny edits and config or agent files itself. Writing is not sending: never email, publish or submit without the user's OK.

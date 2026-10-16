@@ -3,15 +3,13 @@ const __G = require('path').join(__dirname, '..').replace(/\\/g, '/') + '/'; // 
 const path = require('path'), fs = require('fs'), os = require('os'), { spawnSync } = require('child_process');
 const L = require(__G + 'lib.js');
 const ok = (c, m) => console.log(c ? 'PASS' : 'FAIL', m);
-const src = fs.readFileSync(__G + 'gpt.js', 'utf8');
 const P = path.join(os.homedir(), 'gpt-final'); fs.rmSync(P, { recursive: true, force: true }); fs.mkdirSync(P);
 const git = (...a) => spawnSync('git', a, { cwd: P, encoding: 'utf8' });
 git('init', '-q'); git('config', 'user.email', 't@t'); git('config', 'user.name', 't');
 const F = path.join(P, 'risk.mq5'), N = path.join(P, 'never.js');
 fs.writeFileSync(F, 'double Risk(){ return 0.01; }\n'); git('add', '-A'); git('commit', '-qm', 'init');
 fs.rmSync(F);
-const mod = new Function('L', 'root', 'path', 'fs', 'spawnSync', 'stamp', 'NULL_DEV',
-  src.slice(src.indexOf('function noIndexDiff'), src.indexOf('// Build/test/compile output')) + '; return { reviewMaterial };')(L, P, path, fs, spawnSync, () => 'm' + Date.now() + Math.random(), 'NUL');
+const mod = require('./bridge-kit').at(P).review;
 for (const full of [false, true]) {
   const mat = mod.reviewMaterial([F, N], full);
   const m = mat.map.find(x => x.abs === F), n = mat.map.find(x => x.abs === N);

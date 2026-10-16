@@ -18,7 +18,7 @@ How to run it:
    - define 10 as "no realistic improvement left that's worth its cost",
    - ask for up to 10 concrete changes ranked by value for cost, plus what NOT to do,
    - include a **"Decided"** list: things we deliberately accepted, which GPT must not re-raise without new evidence.
-2. **Each round:** run it with `gpt.js idea` (xhigh). Tell GPT the previous scores and exactly what changed since. Ask it to verify by reading the files, and to run no tests.
+2. **Each round:** run it with `gpt.js score --file gpt-goal-prompt.md` (xhigh; GPT applies the rubric instead of critiquing it). Add `--files "<changed files>"` to have them reviewed in the same call; that counts as their GPT review. Tell GPT the previous scores and exactly what changed since. Ask it to verify by reading the files, and to run no tests.
 3. **Between rounds, you decide.** You have full control over the final decisions and changes:
    - apply what's worth it, and fix it properly,
    - reject the rest with a one-line reason and add it to the "Decided" list,

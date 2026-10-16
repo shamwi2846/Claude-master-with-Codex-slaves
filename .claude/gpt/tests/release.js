@@ -25,7 +25,8 @@ const die = m => {
 const hash = f => crypto.createHash('sha256').update(fs.readFileSync(f)).digest('hex').slice(0, 16);
 if (!fs.existsSync(path.join(backup, 'restore.js'))) die(`${backup} is not the backup folder (no restore.js)`);
 
-const lockPort = 49152 + parseInt(crypto.createHash('sha1').update(backup.toLowerCase()).digest('hex').slice(0, 4), 16) % 16000;
+// (below Windows' outgoing-connection port range 49152-65535, where any open connection could hold it)
+const lockPort = 20000 + parseInt(crypto.createHash('sha1').update(backup.toLowerCase()).digest('hex').slice(0, 4), 16) % 16000;
 const lockServer = require('net').createServer();
 lockServer.on('error', e => die(e.code === 'EADDRINUSE' ? `another release is running (it holds 127.0.0.1:${lockPort})` : `release lock: ${e.message}`));
 lockServer.listen(lockPort, '127.0.0.1', () => { locked = true; release(); process.exit(0); });
@@ -37,6 +38,7 @@ if (!fs.existsSync(cur) && fs.existsSync(prev)) { fs.renameSync(prev, cur); cons
 // What a restore needs (restore.js copies the same list) plus the regression checks; and the backup
 // folder's own files, which the manifest also vouches for.
 const files = ['CLAUDE.md', 'settings.json', 'gpt/config.json', 'gpt/gpt.js', 'gpt/gate.js', 'gpt/lib.js', 'gpt/REFERENCE.md']
+  .concat(fs.readdirSync(path.join(CLAUDE, 'gpt', 'bridge')).filter(n => n.endsWith('.js')).map(n => `gpt/bridge/${n}`))
   .concat(fs.readdirSync(path.join(CLAUDE, 'agents')).map(n => `agents/${n}`))
   .concat(fs.readdirSync(path.join(CLAUDE, 'gpt', 'tests')).filter(n => n.endsWith('.js')).map(n => `gpt/tests/${n}`));
 const extras = ['restore.js', 'README.md', 'AGENT-SETUP.md'].filter(f => fs.existsSync(path.join(backup, f)));

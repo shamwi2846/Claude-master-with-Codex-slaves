@@ -18,6 +18,7 @@
 
 ## Other helpers (all read-only, no test runs)
 - **Ideas:** `idea --file <draft.md> --question "<user question>"`
+- **Scoring rounds:** `score --file <rubric.md> [--files a,b] [--full]`. GPT applies the rubric (it doesn't critique it); verdict ALL_10 or BELOW_10. With `--files` the files are frozen and reviewed in the same call and recorded like a review: no findings means clean; findings stay open on their files.
 - **Plans:** `plan --file <plan.md>`. Needed before ExitPlanMode; a light revision (at least 80% identical lines, within 30 minutes) reuses the review.
 - **Heavy reading:** `digest --question ".." --files ..|--dir ..`
 - **Debugging:** `digest --investigate --question "<symptom>" --files/--dir .. --expected ".." --actual ".." --tried "<failed fixes>" [--evidence-file f]`. The answer gives DIAGNOSIS, EVIDENCE [code|runtime], NEXT CHECK, FIX IDEA and CONFIDENCE. Read the cited code yourself and run the NEXT CHECK before fixing.
@@ -50,10 +51,15 @@
 - `doctor [--live]` checks the setup (config, Codex, git, PowerShell, hook registration, problems the hooks survived — `logs/hooks.log`).
 - `stats [--all]` shows speed, tokens, verdicts, how review findings were settled (withdrawn = false alarm) and hook latency.
 - `lesson [--text ".." | --remove N]` manages project lessons.
-- `status` shows pending changes, open findings, the last review, config problems and partial shell tracking.
+- `status` shows pending changes, open findings, the last review, config problems and partial shell tracking. `status --summary` gives a few lines: pending files grouped by folder with their kinds, open findings, untracked changes and problems.
+- **Not tracked** (listed by `status`): copies of existing content, moves (same extension), and files a branch switch changed in a nested repo (only clean → clean, HEAD moved, no commit/reset in the command). Config files copied or moved, and files that already have a pending change, are always tracked.
+- **Setup files edited by another session** (Edit/Write) while this session's shell command runs are left to that session.
+- **Cross-project receipts:** a review or `mark-reviewed` also acknowledges pending records of the same files in other projects, but only when their content is exactly what was acknowledged and no findings are open.
 - **After changing the setup itself:** `node ~/.claude/gpt/tests/run.js` runs the regression checks (no GPT calls);
   `node ~/.claude/gpt/tests/release.js` checks syntax and config, runs them, then copies the setup to the backup folder (`--backup <dir>` or `GPT_BACKUP_DIR`) with a `RELEASE.txt` manifest.
 
 ## Configuration
-- **Per-project overrides** go in `<project>/.claude/gpt.json`, e.g. `{"review": false, "plans": true, "ideas": true, "computerUse": "gpt", "effort": "auto"}`.
+- **Per-project overrides** go in `<project>/.claude/gpt.json`, e.g. `{"review": false, "plans": true, "ideas": true, "computerUse": "gpt", "effort": "auto", "ignore": ["evidence/**", "app/server.mjs"]}`.
+  - `ignore`: globs relative to the project folder for generated files the hooks shouldn't track. `**` spans folders; a name without `/` matches in any folder; a folder covers its contents. `.claude/` and `.codex/` are never ignored.
+  - `gpt.json` is always reviewed (sensitive), and its `ignore` list is suspended while it has an unreviewed change.
 - **Model, timeouts, thresholds and the MetaEditor path** are set in `~/.claude/gpt/config.json`. Invalid values fall back to their defaults (`lib.js` CONFIG_DEFAULTS) and are reported by `doctor` and `status`; unknown or invalid `gpt.json` values are ignored and listed by `status`.

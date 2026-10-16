@@ -20,9 +20,8 @@ git('add', '-A'); git('commit', '-qm', 'init');
 fs.writeFileSync(f('c.js'), 'c.js v2\n'); git('commit', '-qam', 'c2'); // committed before the turns
 fs.mkdirSync(f('ign')); fs.writeFileSync(f('ign/a.set'), 'A=1\n'); fs.writeFileSync(f('ign/c.set'), 'C=1\n');
 fs.writeFileSync(f('u.js'), 'user work\n'); fs.writeFileSync(f('u2.js'), 'user work 2\n'); old(f('u.js')); old(f('u2.js'));
-const src = fs.readFileSync(__G + 'gpt.js', 'utf8');
-const i0 = src.indexOf('function markReviewed('), i1 = src.indexOf('\n}\n', i0) + 2;
-const mr = new Function('L', 'root', 'fs', 'path', src.slice(i0, i1) + '; return markReviewed;')(L, P, fs, path);
+const K = require('./bridge-kit').at(P);
+const mr = K.review.markReviewed;
 const ack = () => mr('claude-final', Date.now(), null, L.gitDeleted(P));
 gate('session', b); prompt();
 
@@ -95,13 +94,12 @@ mr('claude-final', Date.now(), [F], []);
 ok(!L.readState(P).changes[F].openFindings, 'mark-reviewed clears all open findings');
 
 // 11. a failed revision leaves the reviewed staged version untouched
-const r0 = src.indexOf('async function runWrite('), r1 = src.indexOf('\n}\n', r0) + 2;
 const SD = path.join(P, 'stage'); fs.mkdirSync(path.join(SD, 'work'), { recursive: true }); fs.writeFileSync(path.join(SD, 'work', 'doc.md'), 'reviewed\n');
 fs.mkdirSync(path.join(SD, 'prev')); fs.writeFileSync(path.join(SD, 'prev', 'doc.md'), 'reviewed\n');
-const copyTree = (a, z) => { fs.rmSync(z, { recursive: true, force: true }); fs.mkdirSync(z, { recursive: true }); if (fs.existsSync(a)) fs.cpSync(a, z, { recursive: true }); };
-const ask = async o => { o.before(); fs.writeFileSync(path.join(o.cwd, 'doc.md'), 'PARTIAL\n'); return { ok: false, reason: 'timeout', log: 'l' }; };
-const rw = new Function('fs', 'path', 'ask', 'copyTree', 'effortFor', 'writePrompt', 'saveManifest', 'markUnavailable', 'finish', 'stageReport', 'cfg',
-  src.slice(r0, r1) + '; return runWrite;')(fs, path, ask, copyTree, () => 'xhigh', () => '', () => {}, () => {}, () => { throw new Error('FIN'); }, () => '', { maxRounds: 3 });
+// GPT fails after writing a partial result into its scratch copy
+K.codex.ask = async o => { o.before(); fs.writeFileSync(path.join(o.cwd, 'doc.md'), 'PARTIAL\n'); return { ok: false, reason: 'timeout', log: 'l' }; };
+K.codex.markUnavailable = () => {}; K.codex.finish = () => { throw new Error('FIN'); };
+const rw = K.write.runWrite;
 rw(SD, { id: 'x', round: 2, entries: [] }, path.join(SD, 'prev')).catch(() => {}).then(() => {
   ok(fs.readFileSync(path.join(SD, 'work', 'doc.md'), 'utf8') === 'reviewed\n' && !fs.existsSync(path.join(SD, 'next')), 'failed revision keeps the reviewed staged copy');
   fs.rmSync(P, { recursive: true, force: true });
