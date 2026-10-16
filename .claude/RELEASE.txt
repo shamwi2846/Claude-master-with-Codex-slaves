@@ -1,9 +1,9 @@
-Released 2026-10-16T01:59:16.862Z
+Released 2026-10-16T13:51:01.953Z
 Source: C:/Users/Shari/.claude
-Checks: OK: 241 passed, 0 failed, 0 skipped, 37 scripts, 197s
+Checks: OK: 248 passed, 0 failed, 0 skipped, 38 scripts, 195s
 
 09296683eeb020bb  .claude/CLAUDE.md
-7066d1284e36303f  .claude/settings.json
+4548bdf3a97d6724  .claude/settings.json
 6313b76c34691c81  .claude/gpt/config.json
 56968e731c925ae0  .claude/gpt/gpt.js
 f0666d600e45508f  .claude/gpt/gate.js
@@ -21,8 +21,8 @@ e84641d62f9149c4  .claude/gpt/tests/bridge-kit.js
 75ba8ef9c0a5f9bc  .claude/gpt/tests/profile-guard.js
 eaf4a379105fc0ac  .claude/gpt/tests/release.js
 38f2cc2cd8135ad2  .claude/gpt/tests/run.js
-c1f426d0e4c77afc  .claude/gpt/tests/t_a.js
-eeb7224b29a457aa  .claude/gpt/tests/t_a2.js
+a3df104d2fa9c03b  .claude/gpt/tests/t_a.js
+bc4e9edbe4a1844a  .claude/gpt/tests/t_a2.js
 c8e7b599b15b838f  .claude/gpt/tests/t_b.js
 c04473295f061475  .claude/gpt/tests/t_b2.js
 12a42b961de69edd  .claude/gpt/tests/t_b3.js
@@ -47,17 +47,18 @@ ed26d6cf9df18150  .claude/gpt/tests/t_r2.js
 c6711afc98694f67  .claude/gpt/tests/t_r20.js
 37cc3a7e484f8acb  .claude/gpt/tests/t_r21.js
 a8423ab1df6fe6cc  .claude/gpt/tests/t_r22.js
-6728625a86a6c118  .claude/gpt/tests/t_r23.js
+c0f088c5d0438930  .claude/gpt/tests/t_r23.js
+c16e5d45abe9cb8e  .claude/gpt/tests/t_r24.js
 682b7ed613cffe6e  .claude/gpt/tests/t_r3.js
 7693baddca2c3554  .claude/gpt/tests/t_r4.js
 f3852b0f5c2a358b  .claude/gpt/tests/t_r5.js
 9a462377d78234aa  .claude/gpt/tests/t_r6.js
 91a759c468b1dd05  .claude/gpt/tests/t_r7.js
 085ab026e8bb45f7  .claude/gpt/tests/t_r8.js
-17a0c1c0bc1b97af  .claude/gpt/tests/t_r9.js
-cd6706f5e6bbca36  .claude/gpt/tests/t_restore2.js
-c669c3b2f349e8eb  .claude/gpt/tests/t_restore3.js
+1d1dde8540bb978b  .claude/gpt/tests/t_r9.js
+bf9548a8327e2ac2  .claude/gpt/tests/t_restore2.js
+079d3b7a755d3724  .claude/gpt/tests/t_restore3.js
 7e6c8e8faf252c12  .claude/gpt/tests/t_sess.js
 ebea5b73aefc9a13  restore.js
-384bbd4879d1e724  README.md
+835ed0f59043f75b  README.md
 f2e96c64e2cfc325  AGENT-SETUP.md

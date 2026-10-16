@@ -2,28 +2,46 @@ name: CI
 
 on:
   push:
+    branches: [main]
   pull_request:
+  # Weekly, so a change to GitHub's Windows image, git or Node shows up even when nothing is pushed.
+  schedule:
+    - cron: '23 5 * * 1'
   workflow_dispatch:
 
 permissions:
   contents: read
 
+# A newer push to the same pull request cancels its older run.
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+# Actions are pinned to full commit SHAs (Dependabot keeps them current).
 jobs:
   checks:
+    name: checks (Node ${{ matrix.node }})
     # The setup is Windows-only (Job Objects, PowerShell, Windows paths).
     runs-on: windows-latest
     timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        # 24: what the owner's PC runs; 22: the older LTS a new PC may still have.
+        node: [24, 22]
     steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          node-version: 22
+          persist-credentials: false
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: ${{ matrix.node }}
 
       - name: Syntax check
         shell: pwsh
         run: |
-          $files = @(Get-ChildItem .claude/gpt -Recurse -Filter *.js) + (Get-Item restore.js)
+          $files = @(Get-ChildItem .claude/gpt -Recurse -Filter *.js) + (Get-Item restore.js) + @(Get-ChildItem .github/scripts -Filter *.js)
           foreach ($f in $files) { node --check $f.FullName; if ($LASTEXITCODE) { exit 1 } }
           "checked $($files.Count) scripts"
 
@@ -38,3 +56,41 @@ jobs:
         env:
           GPT_BACKUP_DIR: ${{ github.workspace }}
         run: node .claude/gpt/tests/run.js --strict
+
+  lint:
+    # Static checks only: a Linux runner is enough.
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+
+      - name: Workflow files (actionlint)
+        run: docker run --rm -v "$PWD:/repo" --workdir /repo rhysd/actionlint:1.7.12@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667 -color
+
+      - name: JavaScript (ESLint, rules in eslint.config.mjs)
+        run: npx --yes eslint@10.11.0 --max-warnings 0 .
+
+  roundtrip:
+    # Weekly (and on demand): a real release -> restore round trip in profiles with spaces and non-ASCII
+    # letters in their paths. It runs the whole regression suite once more inside the release, so not per push.
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+
+      - name: Release -> restore round trip
+        shell: pwsh
+        run: node .github/scripts/release-roundtrip.js
