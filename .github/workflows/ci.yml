@@ -1,0 +1,40 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  checks:
+    # The setup is Windows-only (Job Objects, PowerShell, Windows paths).
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Syntax check
+        shell: pwsh
+        run: |
+          $files = @(Get-ChildItem .claude/gpt -Recurse -Filter *.js) + (Get-Item restore.js)
+          foreach ($f in $files) { node --check $f.FullName; if ($LASTEXITCODE) { exit 1 } }
+          "checked $($files.Count) scripts"
+
+      - name: Config is valid
+        shell: pwsh
+        run: node -e "const b=require('./.claude/gpt/lib.js').validateConfig(require('./.claude/gpt/config.json')); if(b.length){console.error(JSON.stringify(b));process.exit(1)} console.log('config.json valid')"
+
+      # Every check, nothing skipped, with this repository as the backup under test (the restore checks
+      # restore this release and verify its RELEASE.txt hashes). No GPT calls: the checks use a Codex stub.
+      - name: Regression checks
+        shell: pwsh
+        env:
+          GPT_BACKUP_DIR: ${{ github.workspace }}
+        run: node .claude/gpt/tests/run.js --strict

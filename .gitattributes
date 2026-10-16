@@ -1,0 +1,3 @@
+# Keep every file byte-for-byte: .claude/RELEASE.txt holds the hash of each released file and restore.js
+# verifies them, so no line-ending conversion on checkout or commit.
+* -text

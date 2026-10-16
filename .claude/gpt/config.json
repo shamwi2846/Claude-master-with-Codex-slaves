@@ -1,0 +1,29 @@
+{
+  "model": "gpt-6.1-sol",
+  "defaultEffort": "xhigh",
+  "allowedEfforts": [
+    "xhigh"
+  ],
+  "windowsSandbox": "unelevated",
+  "codexJs": "C:/Users/Shari/AppData/Roaming/npm/node_modules/@openai/codex/bin/codex.js",
+  "timeoutMinutes": {
+    "xhigh": 45
+  },
+  "maxRounds": 3,
+  "minChangedLines": 5,
+  "planReviewValidMinutes": 30,
+  "unavailableCooldownMinutes": 30,
+  "claudeComputerUseWindowMinutes": 30,
+  "computerDisableMcp": [
+    "metaeditor",
+    "grubby",
+    "gptzero",
+    "undetectedgpt",
+    "untell",
+    "originality-ai"
+  ],
+  "writeDiffMaxLines": 400,
+  "metaeditorPath": "C:/Program Files/MetaTrader 5/metaeditor64.exe",
+  "evidenceTimeoutMinutes": 10,
+  "evidenceTailLines": 120
+}
