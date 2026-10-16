@@ -158,7 +158,8 @@ function loadConfig(findCodex = true) {
   if (findCodex && (!cfg.codexJs || !fs.existsSync(cfg.codexJs))) {
     const candidates = [path.join(process.env.APPDATA || '', 'npm', 'node_modules', '@openai', 'codex', 'bin', 'codex.js')];
     try {
-      const g = spawnSync('npm', ['root', '-g'], { encoding: 'utf8', shell: true, timeout: 8000, windowsHide: true });
+      // (one command string: Node warns about an args list with shell: true, DEP0190)
+      const g = spawnSync('npm root -g', { encoding: 'utf8', shell: true, timeout: 8000, windowsHide: true });
       if (g.status === 0) candidates.push(path.join(g.stdout.trim(), '@openai', 'codex', 'bin', 'codex.js'));
     } catch {}
     const found = candidates.find(c => c && fs.existsSync(c));
@@ -1012,7 +1013,7 @@ function quickChecks() {
     // ignore the field). Checked against the `claude` CLI (the desktop app bundles its own, usually newer).
     const desk = Object.values(s.hooks || {}).flat().flatMap(g => g.hooks || []).find(x => /gate\.js"?\s+pre-computer/.test(String(x.command || '')));
     let ver = null;
-    try { ver = (spawnSync('claude', ['--version'], { encoding: 'utf8', timeout: 8000, windowsHide: true, shell: true }).stdout || '').match(/(\d+)\.(\d+)\.(\d+)/); } catch {}
+    try { ver = (spawnSync('claude --version', { encoding: 'utf8', timeout: 8000, windowsHide: true, shell: true }).stdout || '').match(/(\d+)\.(\d+)\.(\d+)/); } catch {}
     const verOk = !!ver && (Number(ver[1]) * 1e6 + Number(ver[2]) * 1e3 + Number(ver[3])) >= 2001295;
     add(!!desk && desk.onFailure === 'block' && verOk, 'desktop hook fails closed',
       !desk || desk.onFailure !== 'block' ? 'pre-computer hook needs "onFailure": "block" in settings.json'
