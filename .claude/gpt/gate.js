@@ -331,7 +331,19 @@ const NOT_OFF = /\b(?:don'?t|do not|never|not|no need to|without|won'?t|wouldn'?
 // What follows the phrase doesn't matter ("turn the GPT setup off and check the build").
 const LEAD_NOT = /\b(?:how|explain\w*|why|what|whether|if|when|confirm|check|make sure|ensure|verify|tell me|show me|commands?|instructions?|steps?)\b/i;
 const POLITE_LEAD = /^(?:ok(?:ay)?[,.]?\s+)?(?:please\s+)?(?:can|could|would|will)\s+you\s+(?:please\s+)?$/i;
-const asksOff = p => String(p).split(/(?<=[.?!])\s+|\n+/).map(s => s.trim()).some(s => {
+// Any negated off phrase in the message withdraws it — a later "actually, do not, under any circumstances,
+// turn the GPT setup off" too (a negation anywhere before an off phrase in its sentence, at any distance).
+const NEGATION = /\b(?:don'?t|do not|never|not|no need to|without|won'?t|wouldn'?t|shouldn'?t|mustn'?t|can'?t|cannot)\b/i;
+const sentencesOf = p => String(p).split(/(?<=[.?!])\s+|\n+/).map(s => s.trim());
+// (every off phrase of a sentence, each with the text since the previous one)
+const OFF_ASK_ALL = new RegExp(OFF_ASK.source, 'gi');
+const withdrawn = p => sentencesOf(p).some(s => {
+  if (NOT_OFF.test(s)) return true;
+  let last = 0;
+  for (const m of s.matchAll(OFF_ASK_ALL)) { if (NEGATION.test(s.slice(last, m.index))) return true; last = m.index + m[0].length; }
+  return false;
+});
+const asksOff = p => !withdrawn(p) && sentencesOf(p).some(s => {
   const m = OFF_ASK.exec(s);
   if (!m) return false;
   const lead = s.slice(0, m.index);
@@ -817,10 +829,12 @@ Object.assign(handlers, {
     if (inp.session_id) try {
       const r0 = ((L.readState(L.HOME).reminders || {})[inp.session_id]) || {}, asked = asksOff(p);
       if ((r0.switchTold || 'on') !== now) switchMsg = switchNote(sw);
-      if (switchMsg || !!r0.offAsked !== asked) L.updateState(L.HOME, g => {
+      // offAskedFor: the user turn the request belongs to (startWindow just set it); gpt.js off accepts the
+      // flag only for the current turn, so a failed write here can never leave an old "yes" usable.
+      if (switchMsg || asked || r0.offAsked) L.updateState(L.HOME, g => {
         g.reminders = g.reminders || {};
         const r = g.reminders[inp.session_id] = g.reminders[inp.session_id] || { at: Date.now(), shown: [] };
-        r.switchTold = now; r.offAsked = asked;
+        r.switchTold = now; r.offAsked = asked; r.offAskedFor = asked ? L.readState(root).userTurnAt : null;
       });
     } catch (e) { survived('switch note', e); }
     const msgs = [];

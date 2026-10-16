@@ -72,6 +72,54 @@ ok(!L.setupSwitch(Q).off && L.setupSwitch(P).off, 'one project switched back on 
 const r4 = gpt(P, 'on', '--all');
 ok(r4.status === 0 && !L.setupSwitch(P).off && !L.setupSwitch(Q).off && !L.readState(L.HOME).setupSwitch && !L.readState(Q).setupSwitch, 'on --all: everything on again');
 
+// 4b. CodeRabbit: a withdrawn request, a stale flag, a busy project during --all, a pruned history
+let rr = offAfter('Turn the GPT setup off. Actually, do not turn the GPT setup off.');
+ok(rr.status === 2 && !L.setupSwitch(P).off, 'a request withdrawn later in the message does not count');
+rr = offAfter('Turn GPT off. Actually, do not, under any circumstances, turn the GPT setup off.');
+ok(rr.status === 2 && !L.setupSwitch(P).off, 'a withdrawal with a long negation does not count either');
+rr = offAfter('Turn GPT off, but actually do not, under any circumstances, turn the GPT setup off.');
+ok(rr.status === 2 && !L.setupSwitch(P).off, 'nor one before a second off phrase in the same sentence');
+gate('prompt', { ...bP, prompt: 'please turn the GPT setup off' });
+const asked = (L.readState(L.HOME).reminders || {})[bP.session_id];
+gate('prompt', { ...bP, prompt: 'something else entirely' });
+L.updateState(L.HOME, g => { g.reminders[bP.session_id] = { ...g.reminders[bP.session_id], offAsked: true, offAskedFor: asked.offAskedFor }; }); // as if the write failed
+rr = gptAs(bP.session_id, P, 'off');
+ok(rr.status === 2 && !L.setupSwitch(P).off, "a flag left from an earlier message (a failed write) doesn't count");
+gpt(Q, 'off');
+const lock = L.statePath(Q) + '.lock'; fs.mkdirSync(lock, { recursive: true });
+fs.writeFileSync(path.join(lock, 'owner'), JSON.stringify({ pid: process.pid, at: Date.now() }));
+rr = gpt(P, 'on', '--all');
+fs.rmSync(lock, { recursive: true, force: true });
+ok(/WARNING: .*gpt-r29-b kept its own switch/.test(rr.stdout), '--all reports a project whose switch it could not reset');
+gpt(Q, 'on'); gpt(P, 'on', '--all');
+// a project that kept its own ON switch through a busy "off --all" stays on, and its history agrees
+gpt(P, 'on'); const lockP = L.statePath(P) + '.lock'; fs.mkdirSync(lockP, { recursive: true });
+gpt(Q, 'off', '--all'); fs.rmSync(lockP, { recursive: true, force: true });
+const KF = path.join(P, 'kept.py');
+gate('pre-bash', { ...bP, tool_use_id: 'k1', tool_name: 'Bash', tool_input: { command: 'node gen.js' } });
+wait(30); fs.writeFileSync(KF, Array(10).fill('k = 1').join('\n'));
+gate('post-bash', { ...bP, tool_use_id: 'k1', tool_name: 'Bash', tool_input: { command: 'node gen.js' } });
+ok(!L.setupSwitch(P).off && pend(P, KF), 'a project that kept its own ON switch through a busy off --all still tracks its edits');
+gpt(P, 'on', '--all');
+// the history follows each project's reset at the moment it happened: still on while --all waited for it
+const t1 = Date.now() + 100000;
+L.updateState(L.HOME, g => { g.setupSwitchAll = { state: 'off', at: t1 }; g.setupSwitchAllLog = [{ state: 'off', at: t1 }]; }); // (the live switch agrees)
+L.updateState(P, s => { delete s.setupSwitch; s.setupSwitchLog = [{ state: 'on', at: t1 - 10 }, { state: 'reset', at: t1 + 5000 }]; });
+const thr = L.setupOffThroughout(P);
+ok(thr(t1 + 100, t1 + 2000) === false && thr(t1 + 6000, t1 + 7000) === true, 'an edit made while --all waited for the project is counted; one after its reset is not');
+L.updateState(L.HOME, g => { delete g.setupSwitchAll; g.setupSwitchAllLog = []; }); L.updateState(P, s => { s.setupSwitchLog = []; });
+const t0 = Date.now();
+L.updateState(L.HOME, g => { g.setupSwitchAllLog = Array.from({ length: 50 }, (_, i) => ({ state: i % 2 ? 'on' : 'off', at: t0 + 1000 + i })); });
+L.updateState(P, s => { s.setupSwitchLog = [{ state: 'off', at: t0 - 5000 }]; });
+ok(L.setupOffThroughout(P)(t0 - 1000, t0 + 500) === false, 'a span that starts before a full (pruned) history is counted');
+L.updateState(L.HOME, g => { g.setupSwitchAllLog = []; }); L.updateState(P, s => { s.setupSwitchLog = []; });
+// a history that disagrees with the live switch (e.g. an older format without reset entries) isn't trusted
+const t2 = Date.now();
+L.updateState(P, s => { delete s.setupSwitch; s.setupSwitchLog = [{ state: 'off', at: t2 - 2000 }]; });
+L.updateState(L.HOME, g => { g.setupSwitchAll = { state: 'on', at: t2 - 1000 }; g.setupSwitchAllLog = [{ state: 'on', at: t2 - 1000 }]; });
+ok(!L.setupSwitch(P).off && L.setupOffThroughout(P)(t2 - 500, t2) === false, 'a history that disagrees with the live switch counts every change');
+L.updateState(L.HOME, g => { delete g.setupSwitchAll; g.setupSwitchAllLog = []; }); L.updateState(P, s => { s.setupSwitchLog = []; });
+
 // 5. a session in the setup's own folder switching off affects only that folder
 const rh = gpt(L.HOME, 'off');
 ok(rh.status === 0 && L.setupSwitch(L.HOME).off && !L.setupSwitch(Q).off && !L.setupSwitch(P).off, "switching off the setup's own folder leaves the other projects on");

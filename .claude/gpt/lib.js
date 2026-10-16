@@ -343,16 +343,26 @@ function setupSwitch(root) {
   return { off: !!s && s.state === 'off', scope: own ? 'project' : all ? 'all' : null, at: (s && s.at) || null };
 }
 // (from, to) => whether the setup was off for the WHOLE time from `from` to `to`, from the switch histories
-// (setupSwitchLog / setupSwitchAllLog; an --all switch also reset the projects' own). Only a change made
+// (setupSwitchLog, with a 'reset' entry where an --all switch cleared it / setupSwitchAllLog). Only a change made
 // within such a span is left uncounted: one whose file changed while on and again while off can't be
 // separated, so it counts.
 function setupOffThroughout(root) {
-  const own = ((root && readState(root).setupSwitchLog) || []).map(e => ({ ...e, own: true }));
-  const ev = own.concat(readState(HOME).setupSwitchAllLog || []).sort((a, b) => a.at - b.at);
+  const ownLog = (root && readState(root).setupSwitchLog) || [], allLog = readState(HOME).setupSwitchAllLog || [];
+  const own = ownLog.map(e => ({ ...e, own: true }));
+  const ev = own.concat(allLog).sort((a, b) => a.at - b.at);
+  // a span starting before a full (so possibly pruned, 50-entry) history can't be judged: count it
+  const known = t => !(ownLog.length >= 50 && t < ownLog[0].at) && !(allLog.length >= 50 && t < allLog[0].at);
+  // A history that disagrees with the live switch now (an older format, a hand edit) can't be trusted:
+  // then every change counts.
+  let ro = null, rg = null;
+  for (const e of ev) { if (e.own) ro = e.state === 'reset' ? null : e.state; else rg = e.state; }
+  if (((ro || rg || 'on') === 'on') === setupSwitch(root).off) return () => false;
   return (from, to) => {
+    if (!known(from)) return false;
     let o = null, g = null, i = 0;
     const on = () => (o || g || 'on') === 'on';
-    const apply = e => { if (e.own) o = e.state; else { g = e.state; o = null; } };
+    // own events: on / off, or 'reset' (cleared by an --all switch, at the moment that reset happened)
+    const apply = e => { if (e.own) o = e.state === 'reset' ? null : e.state; else g = e.state; };
     for (; i < ev.length && ev[i].at <= from; i++) apply(ev[i]);
     if (on()) return false;
     for (; i < ev.length && ev[i].at <= to; i++) { apply(ev[i]); if (on()) return false; }

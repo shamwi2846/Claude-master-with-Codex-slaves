@@ -365,8 +365,9 @@ const commands = {
   // (CLAUDE_CODE_SESSION_ID) only when the user's current message asks for it (the prompt hook records
   // that); from the user's own terminal, always.
   off() {
-    const sid = process.env.CLAUDE_CODE_SESSION_ID;
-    if (sid && !(((L.readState(L.HOME).reminders || {})[sid]) || {}).offAsked) {
+    // (recorded for THIS user turn: a flag left from an earlier message never counts)
+    const sid = process.env.CLAUDE_CODE_SESSION_ID, r = ((L.readState(L.HOME).reminders || {})[sid]) || {};
+    if (sid && !(r.offAsked && r.offAskedFor && r.offAskedFor === L.readState(C.root).userTurnAt)) {
       C.die(`Not switched off: that is the user's decision, and their current message doesn't ask for it. Ask them to say "turn the GPT setup off" (or to run gpt.js off in their own terminal).`);
     }
     setSwitch('off');
@@ -379,11 +380,18 @@ function setSwitch(state) {
   if (C.opts.all) {
     L.updateState(L.HOME, g => { g.setupSwitchAll = { state, at }; g.setupSwitchAllLog = (g.setupSwitchAllLog || []).concat({ state, at }).slice(-50); });
     let reset = 0;
+    // A reset is logged in the project's own history at the moment it happens (a failed one isn't), so the
+    // history always matches what the project's switch really was.
+    const resetOwn = root => {
+      const r = L.updateState(root, s => { delete s.setupSwitch; s.setupSwitchLog = (s.setupSwitchLog || []).concat({ state: 'reset', at: Date.now() }).slice(-50); }, true);
+      if (r && r.lockFailed) console.log(`WARNING: ${root} kept its own switch (its state was busy): run gpt.js ${state} --project "${root}".`);
+      else reset++;
+    };
     for (const f of fs.readdirSync(L.STATE_DIR).filter(n => /^[0-9a-f]{12}\.json$/.test(n))) {
       let root = null; try { root = JSON.parse(fs.readFileSync(path.join(L.STATE_DIR, f), 'utf8')).root; } catch {}
-      if (root && L.readState(root).setupSwitch) { L.updateState(root, s => { delete s.setupSwitch; }); reset++; }
+      if (root && L.readState(root).setupSwitch) resetOwn(root);
     }
-    if (L.readState(L.HOME).setupSwitch) { L.updateState(L.HOME, g => { delete g.setupSwitch; }); reset++; } // (a session in the setup's own folder)
+    if (L.readState(L.HOME).setupSwitch) resetOwn(L.HOME); // (a session in the setup's own folder)
     console.log(`Claude + GPT setup ${state.toUpperCase()} for all projects until \`${back}\`${reset ? ` (${reset} project switch(es) reset)` : ''}.`);
   } else {
     L.updateState(C.root, s => { s.setupSwitch = { state, at }; s.setupSwitchLog = (s.setupSwitchLog || []).concat({ state, at }).slice(-50); });
