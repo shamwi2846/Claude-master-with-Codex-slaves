@@ -5,10 +5,13 @@
 ## Reviews
 - **First round:** `review --task "<goal + user requirements + acceptance criteria>" [--focus ".."] [--files a,b] [--full] [--evidence "<cmd> ;; <cmd>" | --evidence-file <out>]`
   - `--files` limits what is reviewed and acknowledged.
+    - A relative path is looked up from the project root and from the current folder. The call stops if both match different files.
+    - A path that exists in neither place must be a known deletion; otherwise the call stops before GPT is called (the same applies to `score`, `digest` and `testplan`).
   - `--full` does a whole-file audit; it's automatic when nothing changed.
 - **Follow-up:** `review --followup <log.md> --file <response.md> [--fresh]`. It resumes GPT's session, so it's fast. Unaddressed findings come back marked OPEN.
 - **MQL5 evidence:** `--evidence 'node "C:/Users/Shari/.claude/gpt/gpt.js" mql5-compile "<file.mq5>"'`. Keep the inner quotes.
 - **Close out:** `mark-reviewed --by claude-final|claude-fallback|user-declined --files "<exact files>" --note "<why>"`. Always pass `--files`; without it, every pending file and open finding in the project is cleared.
+- **Decisions:** `note [<log.md>] --text ".." | --file <f>`. Without a log, the note goes to the project's latest GPT log.
 - **Exit codes:**
   - `0` ok
   - `3` GPT_UNAVAILABLE (after one retry; usage limits start a 15-minute cooldown, override with `--force-gpt`)

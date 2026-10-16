@@ -48,7 +48,7 @@ const commands = {
   async digest() {
     const { opts } = C;
     if (!opts.question) C.die('digest needs --question "<what Claude needs to know>" and --files "<a,b>" or --dir <folder>');
-    const targets = opts.files ? String(opts.files).split(',').map(f => path.resolve(f.trim())).filter(Boolean) : [];
+    const targets = C.files(opts.files, true);
     if (opts.dir) targets.push(path.resolve(opts.dir) + path.sep + ' (folder — search it)');
     if (!targets.length) C.die('digest needs --files or --dir');
     if (opts.investigate) return R.investigate(targets);
@@ -90,7 +90,7 @@ const commands = {
   async testplan() {
     const { opts } = C;
     if (!opts.task) C.die('testplan needs --task "<what the code must do>" [--files "<relevant code>"]');
-    const files = opts.files ? String(opts.files).split(',').map(f => path.resolve(f.trim())).filter(Boolean) : [];
+    const files = C.files(opts.files, true);
     const prompt = `${P.ROLE}\nDesign the tests Claude should write. ${P.READONLY_NOTE}\n\nWHAT THE CODE MUST DO:\n${opts.task}\n` +
       (files.length ? `\nRELEVANT CODE (read selectively):\n${files.map(f => '- ' + f).join('\n')}\n` : '') + P.lessonsBlock() +
       `\nRULES: reason from the requirements and by reading the code only. Do NOT run, write or build any tests, scripts or reproductions. ` +
@@ -301,8 +301,16 @@ const commands = {
 
   note() {
     const { opts, positional } = C;
-    const log = positional[0];
-    if (!log || !fs.existsSync(log)) C.die('usage: gpt.js note <log.md> --text "..." | --file f');
+    // Without a log: the project's latest GPT run log (review, plan, idea, score, ...), not an answer copy
+    // or a skipped-review record.
+    // (the last finished run in index.tsv, which lists runs as they finish; without one, the newest name)
+    let latest; try {
+      const D = C.logDir(), RUN = /^\d{4}-.*_(review|plan|idea|score|digest|investigate|backtest|research|testplan|write|computer)[^.]*\.md$/;
+      let rows = []; try { rows = fs.readFileSync(path.join(D, 'index.tsv'), 'utf8').trim().split('\n').map(l => l.split('\t')[6]); } catch {}
+      latest = rows.reverse().find(n => n && RUN.test(n) && fs.existsSync(path.join(D, n))) || fs.readdirSync(D).filter(n => RUN.test(n)).sort().pop();
+    } catch {}
+    const log = positional[0] || (latest && path.join(C.logDir(), latest));
+    if (!log || !fs.existsSync(log)) C.die(positional[0] ? `note: no such log ${positional[0]}` : 'note: this project has no GPT log yet; usage: gpt.js note [<log.md>] --text "..." | --file f');
     const text = opts.text || (opts.file && C.readArgFile(opts.file));
     if (!text) C.die('note needs --text or --file');
     fs.appendFileSync(log, `- ${new Date().toLocaleTimeString()}: ${text}\n`);
@@ -312,7 +320,7 @@ const commands = {
   'mark-reviewed'() {
     const { opts } = C;
     if (!opts.note) C.die('mark-reviewed needs --note "<why GPT review was skipped / what reviewed it>"');
-    const scope = opts.files ? String(opts.files).split(',').map(f => path.resolve(f.trim())).filter(Boolean) : null;
+    const scope = opts.files ? C.files(opts.files) : null;
     R.markReviewed(opts.by || 'claude-fallback', Date.now(), scope, L.gitDeleted(C.root));
     fs.writeFileSync(path.join(C.logDir(), `${C.stamp()}_skipped_${Math.random().toString(36).slice(2, 6)}.md`), `# GPT review skipped\n\n- By: ${opts.by || 'claude-fallback'}\n- Note: ${opts.note}\n`);
     console.log('marked reviewed');

@@ -168,7 +168,7 @@ async function write() {
     return runWrite(dir, m, path.join(dir, 'prev'), `\nROUND ${m.round}: you already edited these files (current state is in your working directory). Claude reviewed them. CLAUDE'S FEEDBACK — address every point:\n${briefText}\n`);
   }
   if (!opts.files) C.die('write needs --files "<doc1>,<doc2>"');
-  const targets = String(opts.files).split(',').map(f => f.trim()).filter(Boolean).map(f => path.resolve(f));
+  const targets = C.files(opts.files);
   for (const t of targets) {
     const p = L.docTargetProblem(t, !!opts.data);
     if (p) C.die(`REFUSED: ${t} ${p}. Claude must handle this file itself.`);
