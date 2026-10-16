@@ -120,9 +120,9 @@
       }
     }
   },
+  "autoUpdatesChannel": "latest",
   "tui": "fullscreen",
   "theme": "auto",
   "inputNeededNotifEnabled": true,
-  "agentPushNotifEnabled": true,
-  "autoUpdatesChannel": "latest"
+  "agentPushNotifEnabled": true
 }

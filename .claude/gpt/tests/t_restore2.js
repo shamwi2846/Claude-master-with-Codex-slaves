@@ -1,4 +1,4 @@
-require('./profile-guard'); const __G = require('path').join(__dirname, '..').replace(/\\/g, '/') + '/'; // the setup under test
+require('./profile-guard');
 const __B = (process.env.GPT_BACKUP_DIR || require('path').join(require('os').homedir(), 'Desktop', 'Cloude agent')).replace(/\\/g, '/') + '/';
 if (!require('fs').existsSync(__B + 'restore.js')) { console.log('SKIP no backup folder (set GPT_BACKUP_DIR)'); process.exit(0); }
 const fs=require('fs'),path=require('path'),os=require('os'),{spawnSync}=require('child_process');

@@ -1,0 +1,11 @@
+# Keeps the pinned GitHub Actions current: one weekly pull request for all of them, checked by CI and
+# CodeRabbit before merge. (The setup itself has no npm dependencies.)
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns: ['*']

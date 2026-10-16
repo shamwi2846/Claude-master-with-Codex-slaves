@@ -1,5 +1,5 @@
 // CodeRabbit round 1: output decoded as a stream (split UTF-8 characters), restore takes every released agent.
-require('./profile-guard'); const __G = require('path').join(__dirname, '..').replace(/\\/g, '/') + '/'; // the setup under test
+require('./profile-guard');
 const path = require('path'), fs = require('fs'), os = require('os'), { spawnSync } = require('child_process');
 const K = require('./bridge-kit');
 const ok = (c, m) => console.log(c ? 'PASS' : 'FAIL', m);

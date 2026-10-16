@@ -56,7 +56,7 @@ After restoring, start a new Claude session.
 **Keeping this backup current:** after changing the setup, run `node "$env:USERPROFILE\.claude\gpt\tests\release.js"` (PowerShell). Don't edit files here by hand: `restore.js` refuses a backup that differs from its release (`--force` overrides).
 
 ## Requirements on a new machine
-- **Node.js.**
+- **Node.js** 22 or newer (CI checks 22 and 24).
 - **Git** and **Windows PowerShell** (change tracking, diffs, and containment of evidence commands).
 - **Claude Code**, logged in.
 - **The Codex CLI, logged in:** run `npm i -g @openai/codex`, then `codex login`.
@@ -70,5 +70,13 @@ Versions verified with this backup:
 - The hooks find `gpt.js` by themselves.
 - The Codex location is detected automatically if it differs.
 
+## Checks on GitHub
+The GitHub copy of this folder checks every pull request and every push to `main`:
+- Syntax, config and the full regression suite on Windows, with Node 24 and 22.
+- actionlint (workflow files) and ESLint (`eslint.config.mjs`: real mistakes only, no style rules).
+- CodeQL, while the repository is public.
+
+The same checks also run weekly, plus a real release → restore round trip in throwaway profiles whose paths contain spaces and non-ASCII letters (`.github/scripts/release-roundtrip.js`). Dependabot keeps the pinned actions current.
+
 ## Note
-`settings.json` no longer contains an API token: the z.ai routing was removed. It still holds your personal settings, so don't share this folder publicly.
+`settings.json` holds no API tokens (the z.ai routing was removed), only personal preferences. The GitHub copy is public, so never add secrets, account numbers or EA code to it.

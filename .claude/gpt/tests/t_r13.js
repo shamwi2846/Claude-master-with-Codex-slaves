@@ -80,7 +80,7 @@ const log0 = console.log; console.log = () => {};
   status = 'DONE';
   try { await rw(SD, { id: 'x', round: 2, entries: [] }, path.join(SD, 'prev')); } catch {}
   console.log = log0; process.exit = realExit;
-  ok(partialKept && fs.readFileSync(path.join(SD, 'work', 'doc.md'), 'utf8') === 'half\n', 'PARTIAL keeps the previous staged version; DONE stages the result');
+  ok(partialKept && fs.readFileSync(path.join(SD, 'work', 'doc.md'), 'utf8') === 'half\n' && exited === 2, 'PARTIAL keeps the previous staged version; DONE stages the result (both end the run)');
 
   // G3. two Claude sessions can't operate the desktop at the same time
   const g0 = L.readState(L.HOME), keep = { claudeCuUntil: g0.claudeCuUntil, claudeCuSession: g0.claudeCuSession, claudeCuLastUse: g0.claudeCuLastUse };

@@ -1,6 +1,6 @@
 // Throwaway tests for goal-round-3 fixes.
 require('./profile-guard'); const __G = require('path').join(__dirname, '..').replace(/\\/g, '/') + '/'; // the setup under test
-const path = require('path'), fs = require('fs'), os = require('os'), { spawnSync } = require('child_process');
+const path = require('path'), { spawnSync } = require('child_process');
 const L = require(__G + 'lib.js');
 const ok = (c, m) => console.log(c ? 'PASS' : 'FAIL', m);
 const K = require('./bridge-kit');
