@@ -359,7 +359,43 @@ const commands = {
       logs: path.join(L.LOG_DIR, L.slug(root)),
     }, null, 2));
   },
+
+  // The setup's on/off switch, lasting until switched again: this project, or --all (every project; their
+  // own switches are reset). Switching off is the user's decision: inside a Claude session
+  // (CLAUDE_CODE_SESSION_ID) only when the user's current message asks for it (the prompt hook records
+  // that); from the user's own terminal, always.
+  off() {
+    const sid = process.env.CLAUDE_CODE_SESSION_ID;
+    if (sid && !(((L.readState(L.HOME).reminders || {})[sid]) || {}).offAsked) {
+      C.die(`Not switched off: that is the user's decision, and their current message doesn't ask for it. Ask them to say "turn the GPT setup off" (or to run gpt.js off in their own terminal).`);
+    }
+    setSwitch('off');
+  },
+  on() { setSwitch('on'); },
 };
+
+function setSwitch(state) {
+  const at = Date.now(), back = `gpt.js ${state === 'off' ? 'on' : 'off'}${C.opts.all ? ' --all' : ''}`;
+  if (C.opts.all) {
+    L.updateState(L.HOME, g => { g.setupSwitchAll = { state, at }; g.setupSwitchAllLog = (g.setupSwitchAllLog || []).concat({ state, at }).slice(-50); });
+    let reset = 0;
+    for (const f of fs.readdirSync(L.STATE_DIR).filter(n => /^[0-9a-f]{12}\.json$/.test(n))) {
+      let root = null; try { root = JSON.parse(fs.readFileSync(path.join(L.STATE_DIR, f), 'utf8')).root; } catch {}
+      if (root && L.readState(root).setupSwitch) { L.updateState(root, s => { delete s.setupSwitch; }); reset++; }
+    }
+    if (L.readState(L.HOME).setupSwitch) { L.updateState(L.HOME, g => { delete g.setupSwitch; }); reset++; } // (a session in the setup's own folder)
+    console.log(`Claude + GPT setup ${state.toUpperCase()} for all projects until \`${back}\`${reset ? ` (${reset} project switch(es) reset)` : ''}.`);
+  } else {
+    L.updateState(C.root, s => { s.setupSwitch = { state, at }; s.setupSwitchLog = (s.setupSwitchLog || []).concat({ state, at }).slice(-50); });
+    console.log(`Claude + GPT setup ${state.toUpperCase()} for ${C.root} until \`${back}\`.`);
+  }
+  if (state === 'off') console.log('While off: no change tracking, GPT reviews, plan or idea checks, and Claude may control the screen itself. Changes made before stay pending for when it is back on.');
+  else {
+    // (tracking simply resumes: the hooks count a change only if the setup was on when it was made)
+    const n = L.pending(L.readState(C.root)).length;
+    if (n) console.log(`${n} change(s) from before it was off still wait for review here.`);
+  }
+}
 
 // `status --summary`: what is pending, grouped by folder (two levels below the project) with counts and
 // kinds, plus open findings, untracked changes and problems — a few lines instead of every record.
@@ -374,6 +410,8 @@ function statusSummary(s, p) {
   }
   const kinds = e => ['deleted', 'sensitive', 'shell', 'findings'].filter(k => e[k]).map(k => `${e[k]} ${k}`).join(', ');
   const out = [`${root}: ${p.length} file(s) waiting for review`];
+  const sw = L.setupSwitch(root);
+  if (sw.off) out.unshift(`Claude + GPT setup OFF (${sw.scope === 'all' ? 'all projects' : 'this project'}, since ${new Date(sw.at).toLocaleString()}): gpt.js on${sw.scope === 'all' ? ' --all' : ''} turns it back on`);
   for (const [g, e] of [...groups].sort((a, b) => b[1].n - a[1].n)) out.push(`  ${g}  ${e.n}${kinds(e) ? ` (${kinds(e)})` : ''}`);
   const open = Object.entries(s.changes || {}).filter(([, c]) => c.openFindings);
   if (open.length) out.push(`open findings on ${open.length} file(s): ${[...new Set(open.flatMap(([, c]) => [].concat(c.openFindings)))].map(l => path.basename(l)).join(', ')}`);

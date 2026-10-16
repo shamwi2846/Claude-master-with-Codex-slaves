@@ -21,6 +21,7 @@
 //   gpt.js lesson [--text "..." | --remove N]    (list / add / remove project lessons)
 //   gpt.js doctor [--live]  |  gpt.js stats [--all]  |  gpt.js mql5-compile <file.mq5>
 //   gpt.js status [--summary]                    (--summary: pending files grouped by folder)
+//   gpt.js off [--all]  |  gpt.js on [--all]     (the whole setup off/on until switched again; --all: every project)
 //
 // Exit codes: 0 ok, 2 usage error, 3 GPT unavailable (after one retry), 4 max rounds reached, 5 apply conflict.
 //

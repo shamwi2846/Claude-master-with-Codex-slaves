@@ -18,11 +18,15 @@
 //   preWrite             pre-edit snapshots per tool call; planReviewedAt/Text; gptUnavailableAt/Reason;
 //                        shellScanPartial; lastBulkShell; pendingNoteSig (the pending set the last Stop note named)
 //   notAuthored          [{file, why, at}] newest 50 disk changes not tracked: copies, moves, branch switches
+//   setupSwitch          {state: 'on'|'off', at} this project's own on/off switch (gpt.js on|off);
+//                        setupSwitchLog: its last 50 switches (when the setup was on, for dating changes)
 //   Side files: <key>.json.turn.json (turn-start fingerprints), <key>.json.bash-<tool id>.json (shell snapshots);
 //   baseline/<key>/ (reviewed versions); logs/<project>/ (logs, answers, .frozen round copies, index.tsv).
 // Global state (HOME): sessionRoots, computerLock, claudeCuUntil/LastUse/Session, limitUntil, seenFields,
 //   reminders, doctor cache, lastCleanup, setupWrites (this setup's files written via Edit/Write: session,
-//   content, time), docsCheck (the MQL5 docs server's last handshake). Writers: gate.js (hooks) and gpt.js;
+//   content, time), docsCheck (the MQL5 docs server's last handshake), setupSwitchAll (+ setupSwitchAllLog:
+//   gpt.js on|off --all).
+//   Writers: gate.js (hooks) and gpt.js;
 //   both read everything.
 const fs = require('fs');
 const path = require('path');
@@ -330,7 +334,60 @@ function findRoot(dir) {
 const PROJECT_RULES = { review: v => typeof v === 'boolean', plans: v => typeof v === 'boolean', ideas: v => typeof v === 'boolean',
   computerUse: v => v === 'gpt' || v === 'claude', effort: v => v === 'auto' || EFFORTS.includes(v),
   ignore: v => Array.isArray(v) && v.every(x => typeof x === 'string' && x.trim()) };
+// The setup's on/off switch (gpt.js on|off [--all]), kept in state so it lasts until switched back, with no
+// settings file to change (nothing to review or release): a project's own `setupSwitch`, else the global
+// `setupSwitchAll` (gpt.js on|off --all resets the projects' own).
+function setupSwitch(root) {
+  const own = root ? readState(root).setupSwitch : null, all = readState(HOME).setupSwitchAll;
+  const s = own || all;
+  return { off: !!s && s.state === 'off', scope: own ? 'project' : all ? 'all' : null, at: (s && s.at) || null };
+}
+// (from, to) => whether the setup was off for the WHOLE time from `from` to `to`, from the switch histories
+// (setupSwitchLog / setupSwitchAllLog; an --all switch also reset the projects' own). Only a change made
+// within such a span is left uncounted: one whose file changed while on and again while off can't be
+// separated, so it counts.
+function setupOffThroughout(root) {
+  const own = ((root && readState(root).setupSwitchLog) || []).map(e => ({ ...e, own: true }));
+  const ev = own.concat(readState(HOME).setupSwitchAllLog || []).sort((a, b) => a.at - b.at);
+  return (from, to) => {
+    let o = null, g = null, i = 0;
+    const on = () => (o || g || 'on') === 'on';
+    const apply = e => { if (e.own) o = e.state; else { g = e.state; o = null; } };
+    for (; i < ev.length && ev[i].at <= from; i++) apply(ev[i]);
+    if (on()) return false;
+    for (; i < ev.length && ev[i].at <= to; i++) { apply(ev[i]); if (on()) return false; }
+    return true;
+  };
+}
+// A fresh discovery window from `startedAt`: turn-start fingerprints (when `ctx` has git status entries),
+// HEAD and deletions. The prompt hook starts one per user message (after scanning the previous one); switching
+// the setup on starts one too, so a scan never spans a switch. `carry`: the same user turn continues.
+// Returns an error from fingerprinting, if any (the caller logs it).
+function startDiscoveryWindow(root, ctx, carry, startedAt = Date.now()) {
+  const deleted = gitDeleted(root), head = gitHead(root);
+  let printsError = null;
+  if (ctx && ctx.entries) try { saveTurnPrints(root, startedAt, ctx); } catch (e) { printsError = e; }
+  updateState(root, s => {
+    s.turnStartedAt = startedAt;
+    if (!carry || !s.userTurnAt) s.userTurnAt = startedAt;
+    s.turnBaselineDeleted = deleted;
+    s.turnHead = head; // commits made during the turn are found from here
+    // A file marked deleted that exists again was restored outside the hooks' view: a later deletion
+    // of it is a new change.
+    for (const [f, c] of Object.entries(s.changes || {})) if (c.deleted && fs.existsSync(f)) c.deleted = false;
+    delete s.stopBlockedFor; // fields of an older version of these hooks
+    delete s.findingsBlockedFor;
+  });
+  return printsError;
+}
+
+// Switched off: no tracking, reviews, plan or idea checks, and Claude may control the screen itself (the
+// one-operator desktop lock still applies).
 function projectSettings(root) {
+  const ps = projectFileSettings(root), sw = setupSwitch(root);
+  return sw.off ? { ...ps, review: false, plans: false, ideas: false, computerUse: 'claude', off: sw } : ps;
+}
+function projectFileSettings(root) {
   let dir = path.resolve(root);
   for (;;) {
     const f = path.join(dir, '.claude', 'gpt.json');
@@ -1266,7 +1323,7 @@ function cleanup() {
 
 module.exports = {
   HOME, STATE_DIR, LOG_DIR, loadConfig, slug, gitRoot, readState, writeState, updateState, findRoot,
-  projectSettings, isCode, countLines, pending, reviewedAtFor, isSignificant, gitStatus, gitDeleted, gitChangedCode, minutesAgo,
+  projectSettings, projectFileSettings, setupSwitch, setupOffThroughout, startDiscoveryWindow, isCode, countLines, pending, reviewedAtFor, isSignificant, gitStatus, gitDeleted, gitChangedCode, minutesAgo,
   SENSITIVE_PATH, SENSITIVE_CONTENT, docTargetProblem, fileHash,
   codeSnapshot, statePath, pidAlive, isSensitiveFile, keepCommit, printOf, saveTurnPrints, readTurnPrints, changedByContentThisTurn, validateConfig, CONFIG_DEFAULTS, hookIssue, hookTime, recentHookIssues, HOOK_TIMES, sameAsBaseline, differsFromRev, revPrint, gitIgnored, DOCS_SERVER, DOCS_TOOLS, readDocsServer, mql5DocsServer, shellPrints, watchedIgnored, globalSetupFiles, changeKey, gitHead, gitCommittedSince, sessionRoot, knownSessionRoot, captureBaseline, setBaseline, baselineOf, lessonsFile, readLessons, quickChecks, cleanup, textSimilarity, HOOK_FIELDS,
   REVIEWABLE_CONFIG, ignoredByProject, gitNotAuthored, repoStates, branchSwitch, noteNotAuthored, shareReceipt, pendingAnywhere,

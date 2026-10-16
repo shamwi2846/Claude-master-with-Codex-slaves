@@ -247,6 +247,10 @@ function absorbTurnChanges(root, cfg, ctx = {}) {
     return inRev !== 'absent' ? inRev : L.gitIgnored(root, [p]).has(k) ? null : 'absent';
   };
   disk = disk.filter(d => d.deleted || !writes[d.abs.toLowerCase()] || !otherSessionWrite(writes, d.abs, ctx.sid, snap.turnStartedAt, startOf(d.abs)));
+  // A change made while the setup was off (gpt.js off) the whole time from the window's start is not
+  // counted; anything else is — undated ones (deletions, changes found by content) too, to be safe.
+  const offThroughout = L.setupOffThroughout(root);
+  disk = disk.filter(d => d.deleted || d.byContent || !(d.mtime > snap.turnStartedAt) || !offThroughout(snap.turnStartedAt, d.mtime));
   if (!disk.length) return;
   const notAuthored = L.gitNotAuthored(root, [...new Set(scanned.concat(disk))].filter(d => !d.commitOnly), prints, PROBE_DEADLINE);
   L.updateState(root, s => {
@@ -298,30 +302,48 @@ function absorbTurnChanges(root, cfg, ctx = {}) {
 // request): the user turn (userTurnAt — once-per-turn Stop blocks, same-turn plan review) stays.
 function startWindow(root, ps, carry, sid) {
   const startedAt = Date.now();
-  const ctx = ps.review ? { entries: L.gitStatus(root), sid } : null;
+  // Switched off (gpt.js off) in a project that reviews: the previous window is still scanned, for its
+  // changes from while the setup was on (absorbTurnChanges counts only those).
+  const track = ps.review || (ps.off && L.projectFileSettings(root).review);
+  const ctx = track ? { entries: L.gitStatus(root), sid } : null;
   const prev = L.readState(root);
   const ended = prev.turnClosedAt && prev.turnClosedAt >= (prev.turnStartedAt || 0); // Stop already absorbed it
   // A background job that may write files keeps working after the Stop: its changes are absorbed too.
   const bgWriter = prev.turnStartedAt && prev.bgWriterTurn === prev.turnStartedAt;
   if (ctx && (!ended || bgWriter)) try { absorbTurnChanges(root, L.loadConfig(), ctx); } catch (e) { survived('absorb', e); }
-  const deleted = L.gitDeleted(root);
-  const head = L.gitHead(root);
-  if (ctx && ctx.entries) try { L.saveTurnPrints(root, startedAt, ctx); } catch (e) { survived('fingerprints', e); }
-  L.updateState(root, s => {
-    s.turnStartedAt = startedAt;
-    if (!carry || !s.userTurnAt) s.userTurnAt = startedAt;
-    s.turnBaselineDeleted = deleted;
-    s.turnHead = head; // commits made during the turn are found from here
-    // A file marked deleted that exists again was restored outside the hooks' view: a later deletion
-    // of it is a new change.
-    for (const [f, c] of Object.entries(s.changes || {})) if (c.deleted && require('fs').existsSync(f)) c.deleted = false;
-    delete s.stopBlockedFor; // fields of an older version of these hooks
-    delete s.findingsBlockedFor;
-  });
+  const e = L.startDiscoveryWindow(root, ctx, carry, startedAt);
+  if (e) survived('fingerprints', e);
 }
 
 // A background shell command that may write files (anything but a read-only GPT run).
 const READONLY_GPT = /[\\/]gpt\.js["']?\s+(review|plan|idea|digest|research|testplan|score|status|stats|doctor)\b/i;
+// The on/off switch. A user message that asks to switch THIS setup off — an off verb with the setup named
+// ("turn the GPT setup off", "disable the reviews", "pause GPT") — lets gpt.js off run in that turn; one that
+// only mentions "off" or "disable" ("disable the failing test", "review the off switch") or says not to
+// ("do not turn GPT off") does not.
+const SETUP_WORDS = String.raw`(?:the\s+|this\s+)?(?:claude\s*(?:\+|and|&)\s*gpt(?:\s+setup)?|gpt(?:\s+(?:setup|reviews?|checks?))?|setup|configuration|config|reviews?|hooks?)`;
+const OFF_ASK = new RegExp(String.raw`\b(?:(?:turn|switch|shut|set|put)\s+${SETUP_WORDS}\s+off|(?:turn|switch|shut)\s+off\s+${SETUP_WORDS}|(?:disable|deactivate|pause|suspend)\s+${SETUP_WORDS}|(?:run|execute|use)\s+(?:the\s+)?gpt\.js\s+off)\b`, 'i');
+// (a negation within the same sentence; a dot inside a name like gpt.js doesn't end it)
+const NOT_OFF = /\b(?:don'?t|do not|never|not|no need to|without|won'?t|wouldn'?t|shouldn'?t|mustn'?t|can'?t|cannot)\b(?:[^.?!\n]|\.(?!\s)){0,40}\b(?:off|disable|deactivate|pause|suspend)/i;
+// Per sentence (a dot inside a name like gpt.js doesn't end one), judged by what comes BEFORE the off phrase:
+// no negation, no question/explanation/confirmation lead-in ("how to", "explain", "why", "confirm", "tell me
+// the command to"); a question only as a plain polite request ("can/could you (please) turn ... off?").
+// What follows the phrase doesn't matter ("turn the GPT setup off and check the build").
+const LEAD_NOT = /\b(?:how|explain\w*|why|what|whether|if|when|confirm|check|make sure|ensure|verify|tell me|show me|commands?|instructions?|steps?)\b/i;
+const POLITE_LEAD = /^(?:ok(?:ay)?[,.]?\s+)?(?:please\s+)?(?:can|could|would|will)\s+you\s+(?:please\s+)?$/i;
+const asksOff = p => String(p).split(/(?<=[.?!])\s+|\n+/).map(s => s.trim()).some(s => {
+  const m = OFF_ASK.exec(s);
+  if (!m) return false;
+  const lead = s.slice(0, m.index);
+  if (NOT_OFF.test(s.slice(0, m.index + m[0].length)) || LEAD_NOT.test(lead)) return false;
+  // quoted (e.g. "Turn the GPT setup off" is not what I asked): a mention, not a request
+  if ((lead.match(/"/g) || []).length % 2 === 1 || (lead.match(/“/g) || []).length > (lead.match(/”/g) || []).length || (lead.match(/`/g) || []).length % 2 === 1) return false;
+  return !/\?\s*$/.test(s) || POLITE_LEAD.test(lead);
+});
+// What Claude is told about the switch (CLAUDE.md's rules assume "on").
+const switchNote = sw => sw.off
+  ? `[Claude + GPT setup OFF ${sw.scope === 'all' ? 'for all projects' : 'for this project'} (gpt.js off, ${new Date(sw.at).toLocaleString()}): the hooks track and enforce nothing. Don't consult GPT (reviews, plans, ideas, digests) unless the user asks; you may use computer-use tools yourself. Only the user turns it back on: ${GPT} on${sw.scope === 'all' ? ' --all' : ''}.]`
+  : '[Claude + GPT setup ON again: the CLAUDE.md rules apply (GPT review before a coding task is done, plan and idea checks).]';
 
 const handlers = {
   'post-edit'(inp) {
@@ -330,6 +352,9 @@ const handlers = {
     if (!file) return out();
     const abs = path.resolve(inp.cwd || '.', file);
     if (!L.isCode(abs)) return out();
+    // Reviews off (.claude/gpt.json, or gpt.js off): nothing is tracked, so switching back on doesn't flood
+    // reviews with work done while off.
+    if (!L.projectSettings(rootOf(inp)).review) return out();
     try { if (ignoredNow(rootOf(inp), abs)) return out(); } catch (e) { survived('ignore list', e); }
     // Non-bulk edits are counted here; replace_all edits are counted by pre-edit (occurrences x lines).
     const plain = inp.tool_name === 'MultiEdit' ? (ti.edits || []).filter(e => !e.replace_all)
@@ -410,6 +435,7 @@ const handlers = {
     if (!file) return out();
     const abs = path.resolve(inp.cwd || '.', file);
     if (!L.isCode(abs)) return out();
+    if (!L.projectSettings(rootOf(inp)).review) return out(); // reviews off: nothing is tracked (see post-edit)
     try { if (ignoredNow(rootOf(inp), abs)) return out(); } catch (e) { survived('ignore list', e); }
     try {
       const s = L.readState(rootOf(inp));
@@ -433,7 +459,9 @@ const handlers = {
       // and not simply the last reviewed version.
       const byContent = !pending && s.turnStartedAt && mtime > 0 && mtime <= s.turnStartedAt
         && L.changedByContentThisTurn(rootOf(inp), abs, s.turnStartedAt, s.turnHead);
-      const shellBefore = !pending && s.turnStartedAt && (mtime > s.turnStartedAt || byContent) && !reviewedAsIs(rootOf(inp), abs, c, s.turnStartedAt);
+      // (a change made while the setup was off the whole time since the window began is not Claude's to review)
+      const offTime = !byContent && mtime > (s.turnStartedAt || 0) && L.setupOffThroughout(rootOf(inp))(s.turnStartedAt, mtime);
+      const shellBefore = !pending && s.turnStartedAt && (mtime > s.turnStartedAt || byContent) && !offTime && !reviewedAsIs(rootOf(inp), abs, c, s.turnStartedAt);
       if (shellBefore) {
         // Record that change now (otherwise this edit's baseline would silently absorb it).
         const cfg = L.loadConfig();
@@ -558,6 +586,11 @@ const handlers = {
       // sensitive new files (.set presets, risk/order code) are still tracked individually
       changed = changed.concat(created.filter(p => L.isSensitiveFile(p)).map(p => ({ p, deleted: false })));
     } else changed = changed.concat(created.map(p => ({ p, deleted: false })));
+    // A change made while the setup was off the whole time since this command started (switched off during
+    // it) is not counted. A deletion, or a file time not after the command's start (cp -p, restored
+    // copies), is undated and counts, to be safe.
+    const offThroughout = L.setupOffThroughout(root);
+    changed = changed.filter(({ p, deleted }) => deleted || !after[p] || !(after[p].m > snapBefore.at) || !offThroughout(snapBefore.at, after[p].m));
     if (!changed.length) return out();
     let skip = new Map();
     try { skip = shellSkips(root, inp, snapBefore, before, after, changed, repoTops, created); } catch (e) { survived('not-authored check', e); }
@@ -747,7 +780,11 @@ Object.assign(handlers, {
       failed = L.quickChecks().filter(c => !c.ok).map(c => `${c.name}: ${c.info}`);
       L.updateState(L.HOME, s => { s.doctorAt = Date.now(); s.doctorFailed = failed; s.doctorCodexStamp = codexStamp; });
     }
-    if (failed.length) msgs.push(`[GPT setup problem] ${failed.join('; ')}. GPT calls may fail; run: ${GPT} doctor --live, and tell the user.`);
+    const sw = L.setupSwitch(root);
+    if (sw.off) {
+      msgs.push(switchNote(sw));
+      if (inp.session_id) try { L.updateState(L.HOME, s => { s.reminders = s.reminders || {}; (s.reminders[inp.session_id] = s.reminders[inp.session_id] || { at: Date.now(), shown: [] }).switchTold = 'off'; }); } catch (e) { survived('switch note', e); }
+    } else if (failed.length) msgs.push(`[GPT setup problem] ${failed.join('; ')}. GPT calls may fail; run: ${GPT} doctor --live, and tell the user.`);
     const lessons = L.readLessons(root);
     if (lessons.length) msgs.push(`[Project lessons — confirmed past mistakes in this project; avoid repeating them]\n${lessons.join('\n')}`);
     try { L.cleanup(); } catch (e) { survived('cleanup', e); }
@@ -773,6 +810,19 @@ Object.assign(handlers, {
       return out();
     }
     startWindow(root, ps, false, inp.session_id);
+    // The on/off switch: tell this session when it differs from what it was last told (a session starts
+    // out on, from CLAUDE.md), and remember whether this user message asks to switch off (see pre-bash).
+    const sw = L.setupSwitch(root), now = sw.off ? 'off' : 'on';
+    let switchMsg = null;
+    if (inp.session_id) try {
+      const r0 = ((L.readState(L.HOME).reminders || {})[inp.session_id]) || {}, asked = asksOff(p);
+      if ((r0.switchTold || 'on') !== now) switchMsg = switchNote(sw);
+      if (switchMsg || !!r0.offAsked !== asked) L.updateState(L.HOME, g => {
+        g.reminders = g.reminders || {};
+        const r = g.reminders[inp.session_id] = g.reminders[inp.session_id] || { at: Date.now(), shown: [] };
+        r.switchTold = now; r.offAsked = asked;
+      });
+    } catch (e) { survived('switch note', e); }
     const msgs = [];
     if (ps.ideas && /\b(plan|plans|planning|idea|ideas|suggest|suggestions?|advice|advise|recommend\w*|should (i|we)|approach|architect\w*|design|brainstorm|strategy|better way|improve\w*|opinion|what do you think|pros and cons|trade-?offs?)\b/i.test(p)) {
       msgs.push(`[GPT consult] This request may call for plans/ideas/recommendations. If your answer will contain substantive ones, get a second opinion first: ${GPT} idea --file <draft.md> (or plan). You make the final call; mention useful GPT input. Skip for trivial answers.`);
@@ -780,10 +830,10 @@ Object.assign(handlers, {
     if (/\b(computer use|screen|click|desktop app|metatrader|mt5|mt4|terminal window|gui)\b/i.test(p) && ps.computerUse !== 'claude') {
       msgs.push(`[Computer use] Prefer files/logs/CLI/APIs first. If screen control is needed, delegate to GPT: ${GPT} computer --task "...".`);
     }
-    if (/\b(readme|document\w*|docs?|guide|report|write-?up|manual|proposal|presentation|slides?|changelog|word file|docx)\b/i.test(p)) {
+    if (!sw.off && /\b(readme|document\w*|docs?|guide|report|write-?up|manual|proposal|presentation|slides?|changelog|word file|docx)\b/i.test(p)) {
       msgs.push(`[GPT writer] Medium/long document work goes to GPT: ${GPT} write --files "<exact doc paths>" --brief-file <brief.md>, then review the diff and apply/revise/discard. Small edits: do them yourself.`);
     }
-    if (/\b(logs?|journal|tester|backtest|report|stack ?trace|build output|errors?|crash\w*|why (is|does|did)|not working|failing|fails?)\b/i.test(p)) {
+    if (!sw.off && /\b(logs?|journal|tester|backtest|report|stack ?trace|build output|errors?|crash\w*|why (is|does|did)|not working|failing|fails?)\b/i.test(p)) {
       msgs.push(`[GPT digest] Large logs/reports/build output: let GPT read them first — ${GPT} digest --question "..." --files "<paths>" — then read only the lines it cites.`);
     }
     // Each reminder type at most once per session: the rules are already in CLAUDE.md, so repeating
@@ -800,6 +850,7 @@ Object.assign(handlers, {
         return show;
       }) || msgs;
     }
+    if (switchMsg) fresh = [switchMsg, ...fresh];
     if (!fresh.length) return out();
     return out({ hookSpecificOutput: { hookEventName: 'UserPromptSubmit', additionalContext: fresh.join('\n') } });
   },
