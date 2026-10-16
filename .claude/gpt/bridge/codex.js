@@ -12,13 +12,41 @@ const C = require('./ctx');
 // `resume`: continue an earlier Codex session (follow-up review rounds keep GPT's context). `resume`
 // has no -s/-C flags, so the sandbox is forced via config (verified: writes are still denied).
 // `persist`: keep the session on disk so a later round can resume it (reviews only).
-function codexArgs({ mode, effort, sandbox, cwd, outFile, resume, persist, json }) {
+// Read-only runs (every mode but computer use) skip the owner's Codex config, and these Codex features too:
+// --ignore-user-config alone still offered GPT every ChatGPT app connector (about 1,100 tools through code
+// mode's ALL_TOOLS, many of them writes to Airtable, GitHub, Vercel, ...), plugins, sub-agents and image
+// generation. Web search stays only for research.
+const LOCKDOWN = ['apps', 'plugins', 'multi_agent', 'image_generation', 'tool_suggest', 'computer_use', 'browser_use', 'in_app_browser'].map(f => `features.${f}=false`);
+// The one MCP server a read-only run may get: the offline MQL5 reference (L.mql5DocsServer), with exactly
+// its read-only tools, auto-approved, never required (a failure never stops the run). JSON strings are valid
+// TOML basic strings (lone surrogates and control characters are refused by readDocsServer).
+function docsArgs(def) {
+  const k = `mcp_servers.${L.DOCS_SERVER}`, q = JSON.stringify;
+  return [`${k}.command=${q(def.command)}`, `${k}.args=[${def.args.map(q).join(',')}]`, `${k}.required=false`, `${k}.startup_timeout_sec=20`,
+    `${k}.tool_timeout_sec=60`, `${k}.enabled_tools=[${L.DOCS_TOOLS.map(q).join(',')}]`, ...L.DOCS_TOOLS.map(t => `${k}.tools.${t}.approval_mode="approve"`)];
+}
+// The MQL5 reference for a run on MQL5 code (.mq5/.mqh source, .set presets) or one asked for it
+// (--mql5-docs, digest --backtest, a follow-up of such a run): { def } when it works on this PC, { problem }
+// when it can't be used (also when config.json switches it off: GPT then still marks API facts
+// unverified), null when the run doesn't need it.
+function docsFor(files, force) {
+  if (!(force || (files || []).some(f => /\.(mq5|mqh|set)$/i.test(String(f))))) return null;
+  let d;
+  if (C.cfg.mql5Docs === false) d = { problem: 'switched off in config.json ("mql5Docs": false)' };
+  else try { d = L.mql5DocsServer(); } catch (e) { d = { problem: e.message }; }
+  if (!d.problem) return { def: d };
+  console.error(`[gpt.js] MQL5 docs unavailable for this run (${d.problem}); GPT marks MQL5 API facts as unverified.`);
+  return { problem: d.problem };
+}
+
+function codexArgs({ mode, effort, sandbox, cwd, outFile, resume, persist, json, docs }) {
   const a = [C.cfg.codexJs, 'exec'];
   if (resume) a.push('resume');
   if (json) a.push('--json'); // structured events on stdout (used by doctor to see real tool executions)
   if (mode !== 'computer') a.push('--ignore-user-config');
   a.push('-m', C.cfg.model, '-c', `model_reasoning_effort=${effort}`, '-c', `windows.sandbox=${C.cfg.windowsSandbox}`);
   if (mode === 'computer') for (const s of C.cfg.computerDisableMcp || []) a.push('-c', `mcp_servers.${s}.enabled=false`);
+  else for (const v of [...LOCKDOWN, ...(mode === 'research' ? [] : ['web_search="disabled"']), ...(docs ? docsArgs(docs) : [])]) a.push('-c', v);
   // workspace-write would otherwise also allow TEMP — the stage dir must be the ONLY writable place.
   if (sandbox === 'workspace-write') a.push('-c', 'sandbox_workspace_write.exclude_tmpdir_env_var=true', '-c', 'sandbox_workspace_write.exclude_slash_tmp=true');
   if (resume) a.push('-c', `sandbox_mode=${sandbox}`, '--skip-git-repo-check', '-o', outFile, resume, '-');
@@ -86,10 +114,10 @@ function stopChildrenOnSignal() {
   }
 }
 
-function runCodex({ prompt, effort, sandbox, mode, cwd = C.root, resume, persist, json, onSpawn }) {
+function runCodex({ prompt, effort, sandbox, mode, cwd = C.root, resume, persist, json, onSpawn, docs }) {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'gpt-'));
   const outFile = path.join(tmp, 'last.txt');
-  const args = codexArgs({ mode, effort, sandbox, cwd, outFile, resume, persist, json });
+  const args = codexArgs({ mode, effort, sandbox, cwd, outFile, resume, persist, json, docs });
   const timeoutMs = (C.cfg.timeoutMinutes[effort] || 30) * 60000;
   return new Promise(resolve => {
     let settled = false, hard, timedOut = false;
@@ -165,7 +193,8 @@ function retryable(r) {
 
 // `before` runs before each attempt (write mode uses it to give every attempt a fresh staged copy).
 // Computer use is never retried automatically: repeating UI actions (clicks, toggles) is unsafe.
-async function ask({ mode, prompt, effort, sandbox, meta = '', cwd, before, resume, persist, noRetry, onSpawn }) {
+// `docs`: the MQL5 reference server for this run (docsFor(...).def), passed to every attempt and repair.
+async function ask({ mode, prompt, effort, sandbox, meta = '', cwd, before, resume, persist, noRetry, onSpawn, docs }) {
   const started = Date.now();
   const kind = mode.replace(/-r\d+$/, '');
   const tokensOf = x => Number(((String(x.raw || '').match(/tokens used\s*\n\s*([\d,]+)/i) || [])[1] || '0').replace(/,/g, ''));
@@ -179,7 +208,7 @@ async function ask({ mode, prompt, effort, sandbox, meta = '', cwd, before, resu
     // never a made-up verdict (GPT must say NOT_COMPLETED if it did not actually finish the work).
     const repair = async x => {
       if (!(x.badVerdict && x.sessionId && (persist || resume))) return x; // only saved sessions can be resumed
-      const fix = await runCodex({ prompt: `Your previous answer did not start with the required verdict line. Do NOT explore, read files or run commands now. If you completed the work, restate your final answer exactly, with the first line "VERDICT: <one of ${VERDICTS[kind].join(' | ')}>". If you could not complete it, reply only: NOT_COMPLETED: <reason>.`, effort, sandbox, mode: kind, cwd, resume: x.sessionId });
+      const fix = await runCodex({ prompt: `Your previous answer did not start with the required verdict line. Do NOT explore, read files or run commands now. If you completed the work, restate your final answer exactly, with the first line "VERDICT: <one of ${VERDICTS[kind].join(' | ')}>". If you could not complete it, reply only: NOT_COMPLETED: <reason>.`, effort, sandbox, mode: kind, cwd, resume: x.sessionId, docs });
       tokens += tokensOf(fix);
       const fixed = checkVerdict(fix, kind);
       // A usage limit or login problem during the repair keeps its whole reason (the cooldown below matches it).
@@ -188,13 +217,13 @@ async function ask({ mode, prompt, effort, sandbox, meta = '', cwd, before, resu
         : { ...x, reason: limit ? `review not completed: ${fix.reason}` : `review not completed (${String(fix.text || fix.reason || '').slice(0, 160)})`, raw: x.raw + '\n--- format repair ---\n' + fix.raw };
     };
     if (before) before();
-    r = checkVerdict(await runCodex({ prompt, effort, sandbox, mode: kind, cwd, resume, persist, onSpawn }), kind);
+    r = checkVerdict(await runCodex({ prompt, effort, sandbox, mode: kind, cwd, resume, persist, onSpawn, docs }), kind);
     tokens += tokensOf(r);
     r = await repair(r);
     if (retryable(r) && !noRetry && kind !== 'computer') {
       console.error(`[gpt.js] attempt 1 failed (${r.reason}); retrying once...`);
       if (before) before();
-      r = checkVerdict(await runCodex({ prompt, effort, sandbox, mode: kind, cwd, resume, persist, onSpawn }), kind);
+      r = checkVerdict(await runCodex({ prompt, effort, sandbox, mode: kind, cwd, resume, persist, onSpawn, docs }), kind);
       tokens += tokensOf(r);
       r = await repair(r); // the retry gets the same repair, still only one retry in total
     }
@@ -237,7 +266,10 @@ function finish(r, onOk) {
 
 const sigOf = (...p) => require('crypto').createHash('sha1').update(JSON.stringify(p)).digest('hex').slice(0, 16);
 
+// The run log's line on the MQL5 reference (docsFor's result).
+const docsLine = d => (d ? `- MQL5 docs: ${d.def ? 'on' : `off (${d.problem})`}\n` : '');
+
 module.exports = {
-  codexArgs, PS_TABLE, parseTable, processTable, learnTree, killTree, liveChildren, stopChildrenOnSignal, runCodex,
+  codexArgs, LOCKDOWN, docsArgs, docsFor, docsLine, PS_TABLE, parseTable, processTable, learnTree, killTree, liveChildren, stopChildrenOnSignal, runCodex,
   VERDICTS, checkVerdict, LIMIT_ERR, LOGIN_ERR, retryable, ask, markUnavailable, finish, sigOf,
 };

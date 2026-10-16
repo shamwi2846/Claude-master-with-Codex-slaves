@@ -230,16 +230,17 @@ async function investigate(targets) {
   const { opts } = C;
   const pendingFiles = L.pending(L.readState(C.root)).map(([f]) => f);
   const mat = pendingFiles.length ? reviewMaterial(pendingFiles, false, true) : null;
+  const docs = X.docsFor([...targets, ...pendingFiles], opts['mql5-docs'] || opts.backtest);
   const prompt = `You are diagnosing a bug for Claude (another AI, the only one who writes code), so Claude can skip the exploration. ${P.READONLY_NOTE}\n\n` +
     `SYMPTOM / QUESTION:\n${opts.question}\n` +
     (opts.expected ? `\nEXPECTED: ${opts.expected}\n` : '') + (opts.actual ? `ACTUAL: ${opts.actual}\n` : '') +
     (opts.tried ? `\nALREADY TRIED (did not fix it): ${opts.tried}\n` : '') +
     `\nLOOK AT:\n${targets.map(t => '- ' + t).join('\n')}\n` +
-    (mat ? `\nCLAUDE'S RECENT UNCOMMITTED CHANGES (possible cause):${mat.text}` : '') + (await E.evidence()) + P.lessonsBlock() +
+    (mat ? `\nCLAUDE'S RECENT UNCOMMITTED CHANGES (possible cause):${mat.text}` : '') + (await E.evidence()) + P.lessonsBlock() + P.docsBlock(docs) +
     `\nRULES: search first, read only the relevant regions, at most about 10 short read-only commands. Do NOT run tests, builds or scripts and do not build reproductions — recommend checks in words instead. Mark each evidence item [code] (inferred from reading) or [runtime] (seen in logs/output).\n\n` +
     `Answer compactly (under ${opts.max || 350} words):\nDIAGNOSIS: the supported cause, or "UNRESOLVED" plus the competing hypotheses ranked\nEVIDENCE: up to 8 bullets "path:line [code|runtime] — short quote/value"\n` +
     `NEXT CHECK: the single check that best confirms or rules out the diagnosis\nFIX IDEA: in words (Claude writes the code)\nCONFIDENCE: high | medium | low`;
-  const r = await X.ask({ mode: 'investigate', prompt, effort: C.effortFor(), sandbox: 'read-only' });
+  const r = await X.ask({ mode: 'investigate', prompt, effort: C.effortFor(), sandbox: 'read-only', docs: docs && docs.def, meta: X.docsLine(docs) });
   if (mat) try { fs.rmSync(mat.snapDir, { recursive: true, force: true }); } catch {}
   if (!r.ok) X.markUnavailable(r.reason);
   return X.finish(r);
@@ -308,13 +309,15 @@ async function reviewFollowup(effort, deletedAtStart) {
   const cutoff = Date.now(); // edits after this moment (during evidence collection or the run) stay pending
   const mat = reviewMaterial(files, false, true, roundBases(prevLog));
   registerRunning(files, cutoff, X.sigOf('followup', prevLog, response, opts.evidence || '', opts['evidence-file'] || ''), mat.map);
-  const tail = `${mat.text}${await E.evidence()}\n${P.EFFORT_RULES}\nFOLLOW-UP SCOPE: re-check ONLY (a) the findings Claude's response disputes or claims fixed and (b) behaviour affected by the new diff. The diff above shows exactly what changed since your last review: start there and read only the specific lines you need — do not re-read whole files. Do not re-verify findings already RESOLVED/CONCEDED earlier unless the new diff touches them. If you maintain a finding, give stronger concrete evidence (exact trigger -> wrong result). Concede when Claude is right.\n\n` +
+  // (a round of a run that had the MQL5 reference — or was told it's unavailable — keeps that, e.g. --mql5-docs)
+  const docs = X.docsFor(files, opts['mql5-docs'] || /^- MQL5 docs: /m.test(prev));
+  const tail = `${mat.text}${await E.evidence()}${P.docsBlock(docs)}\n${P.EFFORT_RULES}\nFOLLOW-UP SCOPE: re-check ONLY (a) the findings Claude's response disputes or claims fixed and (b) behaviour affected by the new diff. The diff above shows exactly what changed since your last review: start there and read only the specific lines you need — do not re-read whole files. Do not re-verify findings already RESOLVED/CONCEDED earlier unless the new diff touches them. If you maintain a finding, give stronger concrete evidence (exact trigger -> wrong result). Concede when Claude is right.\n\n` +
     `Format (compact):\nVERDICT: RESOLVED | ISSUES_REMAIN — RESOLVED only if EVERY earlier finding is now resolved or conceded; a finding Claude's response does not address is still open (carry it forward without re-verifying it).\n` +
     `One line per earlier finding: "<n>. CONCEDE | RESOLVED | MAINTAIN | OPEN — <one-sentence reason>" (OPEN = not addressed by Claude). For every MAINTAIN and OPEN line add "- Location: file:line". Then NEW confirmed defects only:\n${P.FINDING_FORMAT}No preamble, no links.`;
   // The whole chain: its open findings are what this round re-checks (and may clear).
   const chain = chainLogs(prevLog);
   const { task: taskLine, focus: focusLine } = followupContext(chain);
-  const meta = `- Round: ${round}\n- Follows: ${prevLog}\n- Task: ${taskLine}\n${focusLine ? `- Focus: ${focusLine}\n` : ''}- Scope: ${scopeLine}\n- Files: ${JSON.stringify(files)}\n`;
+  const meta = `- Round: ${round}\n- Follows: ${prevLog}\n- Task: ${taskLine}\n${focusLine ? `- Focus: ${focusLine}\n` : ''}- Scope: ${scopeLine}\n- Files: ${JSON.stringify(files)}\n${X.docsLine(docs)}`;
   const dropSnap = () => { try { fs.rmSync(mat.snapDir, { recursive: true, force: true }); } catch {} };
   // markReviewed copies the frozen files into the new baselines, so the snapshot is removed after it.
   // Acknowledge exactly the files that were frozen and shown to GPT — nothing else.
@@ -322,7 +325,7 @@ async function reviewFollowup(effort, deletedAtStart) {
   // Fast path: resume GPT's own session from the previous round (it still has the code in context).
   const sid = (prev.match(/^- Session: (\S+)$/m) || [])[1];
   if (sid && !opts.fresh) {
-    const r = await X.ask({ mode: `review-r${round}`, prompt: `Round ${round} of ${cfg.maxRounds} of our review discussion. ${P.READONLY_NOTE}\n\nCLAUDE'S RESPONSE (fixes made / findings disputed, with reasoning):\n${response}\n${tail}`, effort, sandbox: 'read-only', resume: sid, noRetry: true, meta });
+    const r = await X.ask({ mode: `review-r${round}`, prompt: `Round ${round} of ${cfg.maxRounds} of our review discussion. ${P.READONLY_NOTE}\n\nCLAUDE'S RESPONSE (fixes made / findings disputed, with reasoning):\n${response}\n${tail}`, effort, sandbox: 'read-only', resume: sid, noRetry: true, meta, docs: docs && docs.def });
     if (r.ok || !X.retryable(r)) return done(r);
     console.error(`[gpt.js] resuming session failed (${r.reason}); running a fresh round instead...`);
   }
@@ -330,7 +333,7 @@ async function reviewFollowup(effort, deletedAtStart) {
   const prevAnswer = roundHistory(chain).map((h, i) => `--- Round ${i + 1} ---\n${h}`).join('\n\n');
   const r = await X.ask({ mode: `review-r${round}`, prompt: `${P.ROLE}\n${P.READONLY_NOTE}\n\nThis is round ${round} of ${cfg.maxRounds} of a review discussion.\n` +
     (taskLine ? `\nORIGINAL TASK / REQUIREMENTS:\n${taskLine}\n` : '') + (focusLine ? `FOCUS: ${focusLine}\n` : '') +
-    `\nYOUR EARLIER REVIEW ROUNDS:\n${prevAnswer}\n\nCLAUDE'S RESPONSE (fixes made / findings disputed, with reasoning):\n${response}\n${tail}`, effort, sandbox: 'read-only', persist: true, meta });
+    `\nYOUR EARLIER REVIEW ROUNDS:\n${prevAnswer}\n\nCLAUDE'S RESPONSE (fixes made / findings disputed, with reasoning):\n${response}\n${tail}`, effort, sandbox: 'read-only', persist: true, meta, docs: docs && docs.def });
   return done(r);
 }
 
@@ -364,15 +367,16 @@ async function review() {
   const cutoff = Date.now(); // edits after this moment (during evidence collection or the run) stay pending
   const mat = reviewMaterial(files, !!opts.full);
   registerRunning(files, cutoff, X.sigOf('review', mat.full ? 'full' : 'diff', opts.task, opts.focus || '', opts.evidence || '', opts['evidence-file'] || ''), mat.map);
+  const docs = X.docsFor(files, opts['mql5-docs']);
   const prompt = `${P.ROLE}\nYour job: an independent, rigorous code review. ${P.READONLY_NOTE}\n\nWHAT THE CHANGE IS MEANT TO ACCOMPLISH:\n${opts.task}\n` +
     (opts.focus ? `\nFOCUS AREAS: ${opts.focus}\n` : '') +
-    mat.text + (await E.evidence()) + P.lessonsBlock() + P.mql5Block(files) +
+    mat.text + (await E.evidence()) + P.lessonsBlock() + P.mql5Block(files) + P.docsBlock(docs) +
     `\nStart from the DIFF. Read surrounding code in the project (callers, callees, definitions) only as needed to verify behaviour; read whole files only when the diff is not enough.\n` +
     `Look for: correctness bugs, unhandled edge cases, error handling, wrong assumptions about APIs, security issues, concurrency/race issues, data loss, resource leaks, and for trading code order/position/lot/stop-loss/risk logic. Also flag a design decision that is clearly wrong or will be hard to undo. Ignore pure style/formatting.\n\n` +
     `${P.EFFORT_RULES}BEFORE REPORTING: confirm every candidate finding (re-read the code path, check callers, trace the failing input). Drop anything you could not confirm — Claude must re-verify each finding, so false positives are costly.\n\n` +
     `Format (compact — Claude's reading budget is limited):\nVERDICT: NO_ISSUES | ISSUES_FOUND\nThen, most severe first, max 10 CONFIRMED findings, each at most 5 lines:\n${P.FINDING_FORMAT}` +
     `No preamble, no praise, no summary of what you checked, no links.`;
-  const r = await X.ask({ mode: 'review', prompt, effort, sandbox: 'read-only', persist: true, meta: `- Round: 1\n- Task: ${String(opts.task).replace(/\s+/g, ' ')}\n${opts.focus ? `- Focus: ${String(opts.focus).replace(/\s+/g, ' ')}\n` : ''}- Scope: ${scope ? JSON.stringify(scope) : 'ALL'}\n- Files: ${JSON.stringify(files)}\n` });
+  const r = await X.ask({ mode: 'review', prompt, effort, sandbox: 'read-only', persist: true, docs: docs && docs.def, meta: `- Round: 1\n- Task: ${String(opts.task).replace(/\s+/g, ' ')}\n${opts.focus ? `- Focus: ${String(opts.focus).replace(/\s+/g, ' ')}\n` : ''}- Scope: ${scope ? JSON.stringify(scope) : 'ALL'}\n- Files: ${JSON.stringify(files)}\n${X.docsLine(docs)}` });
   const dropSnap = () => { try { fs.rmSync(mat.snapDir, { recursive: true, force: true }); } catch {} };
   if (!r.ok) { X.markUnavailable(r.reason); dropSnap(); }
   // Acknowledge exactly the files that were frozen and shown to GPT — nothing else.
@@ -481,14 +485,15 @@ async function score() {
   const cutoff = Date.now();
   const mat = files.length ? reviewMaterial(files, !!opts.full) : null;
   if (mat) registerRunning(files, cutoff, X.sigOf('score', mat.full ? 'full' : 'diff', rubric, opts.evidence || '', opts['evidence-file'] || ''), mat.map);
+  const docs = X.docsFor(files, opts['mql5-docs']);
   const prompt = `${P.ROLE}\nYour job: SCORE this project against the rubric below. Apply the rubric as written — do not critique, rewrite or extend it. ${P.READONLY_NOTE}\n\nRUBRIC FROM CLAUDE:\n${rubric}\n` +
     (mat ? `\nALSO REVIEW these files as an independent, rigorous code reviewer (correctness, edge cases, error handling, security, concurrency, data loss, trading order/position/lot/stop-loss/risk logic); each confirmed defect lowers the score of its area.${mat.text}` : '') +
-    (await E.evidence()) + P.lessonsBlock() + (mat ? P.mql5Block(files) : '') +
+    (await E.evidence()) + P.lessonsBlock() + (mat ? P.mql5Block(files) : '') + P.docsBlock(docs) +
     `\n${P.EFFORT_RULES}\nFormat (compact):\nVERDICT: ALL_10 | BELOW_10 — ALL_10 only if every area scores 10${mat ? ' and you found no defect in the reviewed files' : ''}.\n` +
     `Then one line per area: "<area>: <score>/10 — <what keeps it below 10, or: nothing worth its cost>".\n` +
     (mat ? `Then the confirmed defects, most severe first (max 10, each at most 5 lines):\n${P.FINDING_FORMAT}` : '') + `No preamble, no praise.`;
-  const r = await X.ask({ mode: 'score', prompt, effort, sandbox: 'read-only', persist: true,
-    meta: mat ? `- Round: 1\n- Task: score against the rubric (${opts.file}) and review the files\n- Scope: ${JSON.stringify(files)}\n- Files: ${JSON.stringify(files)}\n` : '' });
+  const r = await X.ask({ mode: 'score', prompt, effort, sandbox: 'read-only', persist: true, docs: docs && docs.def,
+    meta: (mat ? `- Round: 1\n- Task: score against the rubric (${opts.file}) and review the files\n- Scope: ${JSON.stringify(files)}\n- Files: ${JSON.stringify(files)}\n` : '') + X.docsLine(docs) });
   const dropSnap = () => { if (mat) try { fs.rmSync(mat.snapDir, { recursive: true, force: true }); } catch {} };
   if (!r.ok) { X.markUnavailable(r.reason); dropSnap(); }
   return X.finish(r, () => {

@@ -22,7 +22,8 @@
 //   baseline/<key>/ (reviewed versions); logs/<project>/ (logs, answers, .frozen round copies, index.tsv).
 // Global state (HOME): sessionRoots, computerLock, claudeCuUntil/LastUse/Session, limitUntil, seenFields,
 //   reminders, doctor cache, lastCleanup, setupWrites (this setup's files written via Edit/Write: session,
-//   content, time). Writers: gate.js (hooks) and gpt.js; both read everything.
+//   content, time), docsCheck (the MQL5 docs server's last handshake). Writers: gate.js (hooks) and gpt.js;
+//   both read everything.
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
@@ -114,6 +115,7 @@ const CONFIG_DEFAULTS = {
   unavailableCooldownMinutes: 30, claudeComputerUseWindowMinutes: 30,
   // optional
   computerDisableMcp: [], writeDiffMaxLines: 400, evidenceTimeoutMinutes: 10, evidenceTailLines: 120, bulkShellFiles: 15,
+  mql5Docs: true, // GPT's runs on MQL5 code get the read-only MQL5 reference (mql5-chm) when it is installed
 };
 const EFFORTS = ['minimal', 'low', 'medium', 'high', 'xhigh'], SANDBOXES = ['unelevated', 'elevated'];
 // [[field, what it must be]] for every invalid field ([] = valid).
@@ -134,6 +136,7 @@ function validateConfig(conf) {
   for (const k of ['evidenceTimeoutMinutes', 'evidenceTailLines', 'writeDiffMaxLines', 'bulkShellFiles']) if (k in conf && !num(conf[k])) bad.push([k, 'a positive number']);
   for (const k of ['codexJs', 'metaeditorPath']) if (k in conf && typeof conf[k] !== 'string') bad.push([k, 'text']);
   if ('computerDisableMcp' in conf && !(Array.isArray(conf.computerDisableMcp) && conf.computerDisableMcp.every(str))) bad.push(['computerDisableMcp', 'a list of MCP server names']);
+  if ('mql5Docs' in conf && typeof conf.mql5Docs !== 'boolean') bad.push(['mql5Docs', 'true or false']);
   return bad;
 }
 
@@ -617,6 +620,152 @@ function globalSetupFiles() {
   try { for (const n of fs.readdirSync(path.join(c, 'agents'))) out.push(path.join(c, 'agents', n)); } catch {}
   return out;
 }
+// ---- The offline MQL5 reference (the mql5-chm MCP server) for GPT's read-only runs on MQL5 code.
+// The only MCP server those runs may get, with exactly these read-only tools.
+const DOCS_SERVER = 'mql5-chm';
+const DOCS_TOOLS = ['mql5_chm_status', 'mql5_chm_lookup_identifiers', 'mql5_chm_search', 'mql5_chm_read', 'mql5_chm_read_image'];
+// A strict reader for the few TOML forms that section uses: one-line basic ("...") or literal ('...')
+// strings, arrays of them, booleans and numbers. Anything else throws (the docs then stay off).
+function tomlSpace(src, i, newlines) {
+  for (;;) {
+    while (i < src.length && (src[i] === ' ' || src[i] === '\t' || (newlines && (src[i] === '\n' || src[i] === '\r')))) i++;
+    if (src[i] !== '#') return i;
+    while (i < src.length && src[i] !== '\n') i++;
+    if (!newlines) return i;
+  }
+}
+function tomlValue(src, i) {
+  const c = src[i];
+  if (c === '"' || c === "'") {
+    if (src.startsWith(c.repeat(3), i)) throw new Error('multi-line strings are not supported');
+    let out = '';
+    for (let j = i + 1; ; ) {
+      const ch = src[j];
+      if (ch === undefined || ch === '\n' || ch === '\r') throw new Error('unterminated string');
+      if (ch === c) return [out, j + 1];
+      if (ch < ' ' && ch !== '\t') throw new Error('control character in a string');
+      if (c === '"' && ch === '\\') {
+        const e = src[j + 1], simple = { b: '\b', t: '\t', n: '\n', f: '\f', r: '\r', '"': '"', '\\': '\\' };
+        if (Object.prototype.hasOwnProperty.call(simple, e)) { out += simple[e]; j += 2; continue; }
+        const n = e === 'u' ? 4 : e === 'U' ? 8 : 0, hex = src.slice(j + 2, j + 2 + n), cp = parseInt(hex, 16);
+        if (!n || !/^[0-9a-fA-F]+$/.test(hex) || hex.length !== n || cp > 0x10ffff || (cp >= 0xd800 && cp <= 0xdfff)) throw new Error('bad escape in a string');
+        out += String.fromCodePoint(cp); j += 2 + n; continue;
+      }
+      out += ch; j++;
+    }
+  }
+  if (c === '[') {
+    const arr = [];
+    for (let j = tomlSpace(src, i + 1, true); ; j = tomlSpace(src, j, true)) {
+      if (src[j] === ']') return [arr, j + 1];
+      const [v, k] = tomlValue(src, j);
+      if (typeof v !== 'string') throw new Error('only lists of strings are supported');
+      arr.push(v); j = tomlSpace(src, k, true);
+      if (src[j] === ']') return [arr, j + 1];
+      if (src[j] !== ',') throw new Error('bad list');
+      j++;
+    }
+  }
+  const m = /^(true|false|[+-]?\d[\d_]*(\.\d+)?)(?![\w.])/.exec(src.slice(i, i + 40));
+  if (!m) throw new Error('unsupported value');
+  return [m[1] === 'true' ? true : m[1] === 'false' ? false : Number(m[1].replace(/_/g, '')), i + m[1].length];
+}
+// The server as the owner's Codex config defines it ([mcp_servers.mql5-chm] in $CODEX_HOME/config.toml,
+// kept current by its installer): { command, args } or { problem }. Settings the bridge would not pass on
+// (env, cwd, a URL transport, sub-tables) or `enabled = false` leave the docs off.
+function readDocsServer(file) {
+  let src;
+  try { src = fs.readFileSync(file, 'utf8').replace(/^﻿/, ''); } catch { return { problem: `no Codex config at ${file}` }; }
+  const own = h => h.replace(/\s+/g, '').replace(/^mcp_servers\.(?:"mql5-chm"|'mql5-chm'|mql5-chm)(?=\.|$)/, 'mcp_servers.mql5-chm');
+  const where = `[mcp_servers.${DOCS_SERVER}] in ${file}`;
+  const HEAD = /^[ \t]*\[([^[\]\n]*)\][ \t]*(?:#.*)?$/gm;
+  let m, start = -1, end = src.length;
+  while ((m = HEAD.exec(src))) {
+    const n = own(m[1]);
+    if (n.startsWith(`mcp_servers.${DOCS_SERVER}.`)) return { problem: `${where}: its [${m[1].trim()}] settings are not passed on` };
+    if (n === `mcp_servers.${DOCS_SERVER}`) { if (start >= 0) return { problem: `${where}: defined twice` }; start = HEAD.lastIndex; }
+    else if (start >= 0 && end === src.length) end = m.index;
+  }
+  if (start < 0) return { problem: `no [mcp_servers.${DOCS_SERVER}] in ${file}` };
+  if (/^[ \t]*mcp_servers[ \t]*\.[ \t]*(?:"mql5-chm"|'mql5-chm'|mql5-chm)[ \t]*\./m.test(src)) return { problem: `${where}: settings outside its section are not passed on` };
+  const body = src.slice(start, end), got = {};
+  try {
+    for (let i = tomlSpace(body, 0, true); i < body.length; i = tomlSpace(body, i, true)) {
+      const km = /^([A-Za-z0-9_-]+|"[^"\\\n]*"|'[^'\n]*')[ \t]*=[ \t]*/.exec(body.slice(i));
+      if (!km) throw new Error('unsupported key');
+      const key = km[1].replace(/^["']|["']$/g, '');
+      if (key in got) throw new Error(`${key} given twice`);
+      const [v, j] = tomlValue(body, i + km[0].length);
+      got[key] = v;
+      i = tomlSpace(body, j, false);
+      if (i < body.length && body[i] !== '\n' && body[i] !== '\r') throw new Error('extra text after a value');
+    }
+  } catch (e) { return { problem: `${where}: ${e.message}` }; }
+  const other = Object.keys(got).filter(k => !['command', 'args', 'enabled', 'required', 'startup_timeout_sec', 'tool_timeout_sec', 'enabled_tools', 'disabled_tools'].includes(k));
+  if (other.length) return { problem: `${where}: sets ${other.join(', ')}, which the bridge does not pass on` };
+  if (got.enabled === false) return { problem: `${where}: switched off (enabled = false)` };
+  const args = got.args === undefined ? [] : got.args;
+  if (typeof got.command !== 'string' || !got.command || !Array.isArray(args)) return { problem: `${where}: needs a command and a list of args` };
+  if ([got.command, ...args].some(s => !s.isWellFormed() || /[\u0000-\u001f\u007f]/.test(s))) return { problem: `${where}: unusable characters` };
+  return { command: got.command, args };
+}
+// The server for this PC, proven to work: its files exist and a real handshake (initialize + tools/list)
+// lists every docs tool. The handshake result is kept for an hour per installation (paths + file times).
+// `probe` false (session-start health check): no handshake, only a cached result (null if none yet).
+function mql5DocsServer(probe = true) {
+  const d = readDocsServer(path.join(process.env.CODEX_HOME || path.join(os.homedir(), '.codex'), 'config.toml'));
+  if (d.problem) return d;
+  const isFile = f => { try { return fs.statSync(f).isFile(); } catch { return false; } };
+  for (const f of [d.command, ...d.args.filter(a => /\.[cm]?js$/i.test(a))]) if (!isFile(f)) return { problem: `${f} not found (reinstall or update the MQL5 CHM MCP)` };
+  const stamp = [d.command, ...d.args].map(f => { try { return `${f}@${fs.statSync(f).mtimeMs}`; } catch { return f; } }).join('|');
+  const last = readState(HOME).docsCheck;
+  if (last && last.stamp === stamp && (Date.now() - last.at < 3600000 || !probe)) return last.problem ? { problem: last.problem } : d;
+  if (!probe) return null;
+  let problem = null;
+  try {
+    const r = spawnSync(process.execPath, ['-e', DOCS_HANDSHAKE, JSON.stringify([d.command, ...d.args]), JSON.stringify(DOCS_TOOLS)],
+      { encoding: 'utf8', timeout: 20000, windowsHide: true, maxBuffer: 8 * 1024 * 1024 });
+    let res = null; try { res = JSON.parse(String(r.stdout || '').trim()); } catch {}
+    problem = !res ? `the docs check failed (${r.error ? r.error.message : `exit ${r.status}`})` : res.problem ? `the docs server ${res.problem}` : null;
+  } catch (e) { problem = `the docs check failed (${e.message})`; }
+  try { updateState(HOME, s => { s.docsCheck = { stamp, at: Date.now(), problem }; }); } catch {}
+  return problem ? { problem } : d;
+}
+// The handshake, in a helper process (so mql5DocsServer stays synchronous): start the server, initialize,
+// list its tools (every docs tool must be there) and call mql5_chm_status, which needs the loaded index —
+// each reply validated. Prints {} when all is well, else { problem }.
+const DOCS_HANDSHAKE = `
+const { spawn } = require('child_process');
+const [cmd, ...args] = JSON.parse(process.argv[1]), need = JSON.parse(process.argv[2]);
+let ended = false, buf = '';
+const done = problem => { if (ended) return; ended = true; try { p.kill(); } catch {} process.stdout.write(JSON.stringify(problem ? { problem } : {})); process.exit(0); };
+const p = spawn(cmd, args, { stdio: ['pipe', 'pipe', 'ignore'], windowsHide: true });
+const send = o => { try { p.stdin.write(JSON.stringify(o) + '\\n'); } catch (e) { done('did not accept input (' + e.message + ')'); } };
+p.on('error', e => done('did not start (' + e.message + ')'));
+p.on('exit', c => done('stopped (exit ' + c + ') before it answered'));
+p.stdin.on('error', () => {});
+p.stdout.setEncoding('utf8');
+p.stdout.on('data', d => {
+  buf += d;
+  for (let i; (i = buf.indexOf('\\n')) >= 0; ) {
+    const line = buf.slice(0, i).trim(); buf = buf.slice(i + 1);
+    if (!line) continue;
+    let m; try { m = JSON.parse(line); } catch { return done('sent a reply that is not JSON'); }
+    if (m.jsonrpc !== '2.0' || m.id === undefined) continue; // notifications, logs
+    if (m.error || !m.result) return done('failed request ' + m.id + (m.error ? ' (' + String(m.error.message || '').slice(0, 120) + ')' : ''));
+    if (m.id === 1) { send({ jsonrpc: '2.0', method: 'notifications/initialized' }); send({ jsonrpc: '2.0', id: 2, method: 'tools/list' }); }
+    else if (m.id === 2) {
+      const names = Array.isArray(m.result.tools) ? m.result.tools.map(t => t && t.name) : [];
+      const missing = need.filter(t => !names.includes(t));
+      if (missing.length) return done('did not offer ' + missing.join(', '));
+      send({ jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: 'mql5_chm_status', arguments: {} } });
+    } else if (m.id === 3) return done(m.result.isError ? 'reported its index as not ready (' + JSON.stringify(m.result.content || '').slice(0, 160) + ')' : null);
+  }
+});
+send({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'claude-gpt-bridge', version: '1' } } });
+setTimeout(() => done('did not answer within 15 s'), 15000);
+`;
+
 // The record key of a file: an existing record's spelling when one matches case-insensitively (Windows
 // paths are; Edit, git and the folder walk may spell the same file differently).
 function changeKey(s, abs) {
@@ -1046,6 +1195,11 @@ function quickChecks() {
   } catch (e) { add(false, 'state files readable', e.message); }
   // Optional: a PC without MT5 is fine (only MQL5 compile evidence is unavailable), so never a failure.
   if (cfg.metaeditorPath) add(true, 'MetaEditor (optional)', fs.existsSync(cfg.metaeditorPath) ? cfg.metaeditorPath : 'not installed — MQL5 compile evidence unavailable');
+  // Optional too: without it GPT's MQL5 runs mark API-fact claims as unverified.
+  if (cfg.mql5Docs !== false) try {
+    const d = mql5DocsServer(false);
+    add(true, 'MQL5 docs for GPT (optional)', !d ? 'configured; checked on the first MQL5 run' : d.problem ? `off — ${d.problem}` : `on (${d.args.find(a => /\.[cm]?js$/i.test(a)) || d.command})`);
+  } catch (e) { add(true, 'MQL5 docs for GPT (optional)', `off — ${e.message}`); }
   // Fields the hooks rely on vs. what Claude Code actually sent (recorded by gate.js on first use).
   const need = HOOK_FIELDS;
   const seen = readState(HOME).seenFields || {};
@@ -1114,6 +1268,6 @@ module.exports = {
   HOME, STATE_DIR, LOG_DIR, loadConfig, slug, gitRoot, readState, writeState, updateState, findRoot,
   projectSettings, isCode, countLines, pending, reviewedAtFor, isSignificant, gitStatus, gitDeleted, gitChangedCode, minutesAgo,
   SENSITIVE_PATH, SENSITIVE_CONTENT, docTargetProblem, fileHash,
-  codeSnapshot, statePath, pidAlive, isSensitiveFile, keepCommit, printOf, saveTurnPrints, readTurnPrints, changedByContentThisTurn, validateConfig, CONFIG_DEFAULTS, hookIssue, hookTime, recentHookIssues, HOOK_TIMES, sameAsBaseline, differsFromRev, revPrint, gitIgnored, shellPrints, watchedIgnored, globalSetupFiles, changeKey, gitHead, gitCommittedSince, sessionRoot, knownSessionRoot, captureBaseline, setBaseline, baselineOf, lessonsFile, readLessons, quickChecks, cleanup, textSimilarity, HOOK_FIELDS,
+  codeSnapshot, statePath, pidAlive, isSensitiveFile, keepCommit, printOf, saveTurnPrints, readTurnPrints, changedByContentThisTurn, validateConfig, CONFIG_DEFAULTS, hookIssue, hookTime, recentHookIssues, HOOK_TIMES, sameAsBaseline, differsFromRev, revPrint, gitIgnored, DOCS_SERVER, DOCS_TOOLS, readDocsServer, mql5DocsServer, shellPrints, watchedIgnored, globalSetupFiles, changeKey, gitHead, gitCommittedSince, sessionRoot, knownSessionRoot, captureBaseline, setBaseline, baselineOf, lessonsFile, readLessons, quickChecks, cleanup, textSimilarity, HOOK_FIELDS,
   REVIEWABLE_CONFIG, ignoredByProject, gitNotAuthored, repoStates, branchSwitch, noteNotAuthored, shareReceipt, pendingAnywhere,
 };

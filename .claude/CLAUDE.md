@@ -8,7 +8,7 @@
 **Roles.**
 - **Claude** is the only one who writes code.
 - **GPT** (`gpt-6.1-sol` via the Codex CLI, always at effort `xhigh`) reviews code, plans and ideas, writes documents, reads large material, and operates the computer.
-- **Isolation:** review, plan, idea and digest runs are read-only with no MCP tools. Writing runs can only change staged copies.
+- **Isolation:** review, plan, idea and digest runs are read-only, with no connectors, plugins, web or MCP tools, except the read-only MQL5 docs (mql5-chm) on MQL5 code. Writing runs can only change staged copies.
 
 **Calling GPT.**
 - Every call goes through `node "C:/Users/Shari/.claude/gpt/gpt.js" <command>` (below: `gpt.js`). Exact flags, exit codes and recipes are in `~/.claude/gpt/REFERENCE.md`; read it when you need them.

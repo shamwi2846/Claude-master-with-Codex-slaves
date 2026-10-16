@@ -61,13 +61,14 @@ const commands = {
       `- keep two questions apart: does the EA behave as coded (errors, rejected orders, wrong lots) vs. is the strategy any good\n` +
       `- a report alone can't prove robustness: say what is missing (forward/out-of-sample period, optimization neighbours, realistic costs/slippage)\n` +
       `Give a VERDICT line: QUESTIONABLE | LIKELY_OVERFIT | INSUFFICIENT_EVIDENCE | NO_RED_FLAGS (never "robust") with the 2-3 numbers that decide it.\n` : '';
+    const docs = X.docsFor(targets, opts['mql5-docs'] || opts.backtest);
     const prompt = `You are doing the heavy reading for Claude (another AI that writes the code) so Claude can save its context. ${P.READONLY_NOTE}\n\n` +
-      `QUESTION FROM CLAUDE:\n${opts.question}\n\nREAD:\n${targets.map(t => '- ' + t).join('\n')}\n${backtest}\n` +
+      `QUESTION FROM CLAUDE:\n${opts.question}\n\nREAD:\n${targets.map(t => '- ' + t).join('\n')}\n${backtest}${P.docsBlock(docs)}\n` +
       `Search first (Select-String / grep for the terms the question implies: errors, failed, warnings, names, numbers), then read only the regions around the hits; for counts or patterns, count with a command instead of reading everything. Cover the whole file — not just its beginning — but never dump large parts of it. Do not run tests or builds. Then answer compactly:\n` +
       `ANSWER: the direct answer in 1-5 sentences.\nEVIDENCE: up to 15 bullets, each "path:line — the exact quoted line or value (short)". Quote exact error messages and numbers.\n` +
       `PATTERNS: counts / first and last occurrence / timing, if relevant.\nUNSURE: anything you could not determine.\n` +
       `Keep the whole answer under ${opts.max || 400} words. Never paste large blocks of the files.`;
-    const r = await X.ask({ mode: 'digest', prompt, effort: C.effortFor(), sandbox: 'read-only' });
+    const r = await X.ask({ mode: 'digest', prompt, effort: C.effortFor(), sandbox: 'read-only', docs: docs && docs.def, meta: X.docsLine(docs) });
     if (!r.ok) X.markUnavailable(r.reason);
     return X.finish(r);
   },
@@ -91,14 +92,15 @@ const commands = {
     const { opts } = C;
     if (!opts.task) C.die('testplan needs --task "<what the code must do>" [--files "<relevant code>"]');
     const files = C.files(opts.files, true);
+    const docs = X.docsFor(files, opts['mql5-docs']);
     const prompt = `${P.ROLE}\nDesign the tests Claude should write. ${P.READONLY_NOTE}\n\nWHAT THE CODE MUST DO:\n${opts.task}\n` +
-      (files.length ? `\nRELEVANT CODE (read selectively):\n${files.map(f => '- ' + f).join('\n')}\n` : '') + P.lessonsBlock() +
+      (files.length ? `\nRELEVANT CODE (read selectively):\n${files.map(f => '- ' + f).join('\n')}\n` : '') + P.lessonsBlock() + P.docsBlock(docs) +
       `\nRULES: reason from the requirements and by reading the code only. Do NOT run, write or build any tests, scripts or reproductions. ` +
       `List only cases that can really happen in this project's use; no duplicates, no trivial getters/setters.\n\n` +
       `Answer compactly: at most ${opts.max || 15} cases, most important first, each one line:\n` +
       `<n>. [CRITICAL|HIGH|MEDIUM] <input / state> -> <expected result>  (why it matters, 5-10 words)\n` +
       `Then "NOT WORTH TESTING:" one line naming what you deliberately skipped.`;
-    const r = await X.ask({ mode: 'testplan', prompt, effort: C.effortFor(), sandbox: 'read-only' });
+    const r = await X.ask({ mode: 'testplan', prompt, effort: C.effortFor(), sandbox: 'read-only', docs: docs && docs.def, meta: X.docsLine(docs) });
     if (!r.ok) X.markUnavailable(r.reason);
     return X.finish(r);
   },

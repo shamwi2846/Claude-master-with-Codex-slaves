@@ -1,7 +1,7 @@
 # Claude + GPT setup: backup copy
 
 This folder is a backup of a global Claude Code configuration with these rules:
-- **Claude writes all code.** GPT (`gpt-6.1-sol` via the Codex CLI, always at `xhigh` effort) reviews code, plans and ideas. Those runs are read-only and get no MCP tools.
+- **Claude writes all code.** GPT (`gpt-6.1-sol` via the Codex CLI, always at `xhigh` effort) reviews code, plans and ideas. Those runs are read-only and get no app connectors, plugins or MCP tools, except the read-only MQL5 docs (mql5-chm) when they look at MQL5 code.
 - **GPT writes documents.** It works on staged copies only. Claude reviews the changes and then applies, revises or discards them.
 - **GPT does the heavy reading.** Big logs, MT5 journals, tester reports and build output go through `gpt.js digest`, which returns a short summary with line references. This saves Claude's tokens.
 - **Computer use goes to GPT.**

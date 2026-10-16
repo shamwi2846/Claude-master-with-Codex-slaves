@@ -35,4 +35,17 @@ function mql5Block(files) {
     `- tester vs live differences (time functions, history access, symbols not in Market Watch)\n`;
 }
 
-module.exports = { READONLY_NOTE, EFFORT_RULES, ROLE, FINDING_FORMAT, lessonsBlock, mql5Block };
+// How to use the offline MQL5 reference (codex.js docsFor's result; '' for runs that don't need it).
+function docsBlock(d) {
+  if (!d) return '';
+  const facts = 'an MQL5 API fact (function behaviour, return values, error or trade retcodes, enums, Strategy Tester behaviour)';
+  if (!d.def) return `\nMQL5 DOCS: the offline MQL5 reference is not available in this run (${d.problem}). Mark any finding or claim that rests on ${facts} as "unverified against the MQL5 docs".\n`;
+  return `\nMQL5 DOCS — read-only tools of the offline MQL5 reference (MCP server "mql5-chm"); use them for nothing else. Before you report anything that rests on ${facts}:\n` +
+    `1. call mql5_chm_status once (note the index revision);\n` +
+    `2. find the exact identifier with mql5_chm_lookup_identifiers (source "mql5", limit 1; up to 16 names per call), or mql5_chm_search for a concept;\n` +
+    `3. read a supporting passage with mql5_chm_read (that topic_id, with section_id or focus; include_related false, include_images false) — an exact match or a search hit alone is no support;\n` +
+    `4. cite it in the finding: (MQL5 docs: <title>, topic_id <id>, section <id> if used).\n` +
+    `If the reference can't support a claim, write "unverified against the MQL5 docs" instead of asserting it. A passage verified earlier in this session can be reused.\n`;
+}
+
+module.exports = { READONLY_NOTE, EFFORT_RULES, ROLE, FINDING_FORMAT, lessonsBlock, mql5Block, docsBlock };
