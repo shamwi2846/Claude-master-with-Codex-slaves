@@ -27,6 +27,11 @@ K.C.die = die0; process.chdir(cwd0);
 // 2. review / digest with a wrong path: stopped before GPT (the test profile's GPT stub would fail with exit 3)
 const r1 = gpt(SUB, 'review', '--task', 'x', '--project', P, '--files', 'skill/mcp/app/nothing.mjs');
 ok(r1.status === 2 && /not found and not a tracked deletion/.test(r1.stderr) && /Nothing was sent to GPT/.test(r1.stderr), 'review stops on a path that is neither a file nor a tracked deletion');
+const APP = path.join(P, 'mcp', 'app');
+const rd = gpt(SUB, 'review', '--task', 'x', '--project', P, '--files', APP);
+const sd = gpt(SUB, 'score', '--file', path.join(P, 'both.js'), '--project', P, '--files', `${APP},${path.join(APP, 'server.mjs')}`);
+ok([rd, sd].every(r => r.status === 2 && /mcp[\\/]app is a folder; pass the files/.test(r.stderr) && /Nothing was sent to GPT/.test(r.stderr) && !/EISDIR/.test(r.stderr)),
+  'review and score stop on a folder with a clear message (no EISDIR crash)');
 const r2 = gpt(SUB, 'digest', '--question', 'x', '--project', P, '--files', 'nope.log');
 ok(r2.status === 2 && /Nothing was sent to GPT/.test(r2.stderr), 'digest stops on a missing file');
 // a deleted file the tracker knows is still reviewed (it reaches GPT: the stub's failure, not the path check)
