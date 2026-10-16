@@ -334,9 +334,11 @@ async function reviewFollowup(effort, deletedAtStart) {
   return done(r);
 }
 
-// A --files path that doesn't exist must be a deletion the tracker or git knows; anything else is a wrong
-// path (e.g. relative to another folder), and the call stops before GPT reviews nothing.
+// A --files path must be a file, or a deletion the tracker or git knows: a folder (which the review can't
+// freeze) or a wrong path (e.g. relative to another folder) stops the call before GPT is asked.
 function stopOnUnknownPaths(files, s, deleted) {
+  const folders = files.filter(f => { try { return fs.statSync(f).isDirectory(); } catch { return false; } });
+  if (folders.length) C.die(`--files: ${folders.join(', ')} ${folders.length > 1 ? 'are folders' : 'is a folder'}; pass the files to review. Nothing was sent to GPT.`);
   const known = new Set([...Object.keys(s.changes || {}), ...deleted].map(f => path.resolve(f).toLowerCase()));
   const unknown = files.filter(f => !fs.existsSync(f) && !known.has(f.toLowerCase()));
   if (unknown.length) C.die(`--files: not found and not a tracked deletion: ${unknown.join(', ')} (relative paths are looked up from ${C.root} and the current folder). Nothing was sent to GPT.`);
