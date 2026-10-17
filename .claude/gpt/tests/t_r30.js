@@ -4,7 +4,17 @@
 require('./profile-guard'); const __G = require('path').join(__dirname, '..').replace(/\\/g, '/') + '/'; // the setup under test
 const path = require('path'), fs = require('fs'), os = require('os'), crypto = require('crypto'), { spawnSync } = require('child_process');
 const L = require(__G + 'lib.js'), E = require('./bridge-kit').evidence;
-const gate = (ev, i) => spawnSync(process.execPath, [__G + 'gate.js', ev], { input: JSON.stringify(i), encoding: 'utf8' }).stdout;
+// (git variables inherited from a caller, e.g. a git hook, could point git at its repository or change its
+// configuration: these tests use none, so all of them are cleared)
+const ENV = Object.fromEntries(Object.entries(process.env).filter(([k]) => !/^GIT_/i.test(k)));
+const gate = (ev, i) => spawnSync(process.execPath, [__G + 'gate.js', ev], { input: JSON.stringify(i), encoding: 'utf8', env: ENV }).stdout;
+// git in a test repository; a failed command stops the test
+const gitIn = cwd => (...a) => {
+  const r = spawnSync('git', ['-c', 'user.email=t@example.com', '-c', 'user.name=t', ...a], { cwd, encoding: 'utf8', env: ENV });
+  if (r.status !== 0) throw new Error(`git ${a.join(' ')} in ${cwd} failed: ${r.stderr || r.error}`);
+  return r;
+};
+const ownRepo = d => path.relative(gitIn(d)('rev-parse', '--show-toplevel').stdout.trim(), d) === '';
 const ok = (c, m) => console.log(c ? 'PASS' : 'FAIL', m);
 const wait = ms => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 const W = path.join(os.homedir(), 'gpt-r30-test');
@@ -44,9 +54,11 @@ fs.writeFileSync(pr3, utf16(REPORT)); gate('stop', bP);
 ok(!pend(pr3) && pend(pp), '... and cleared at the end of the turn, once its content shows it is a report');
 // deleted from git: judged by the version git last had
 const G = path.join(W, 'gitproj'); fs.mkdirSync(G, { recursive: true });
-const git = (...a) => spawnSync('git', ['-c', 'user.email=t@example.com', '-c', 'user.name=t', ...a], { cwd: G, encoding: 'utf8' });
+const git = gitIn(G);
 const gr = put(path.join(G, 'runs', 'r1', 'result.htm'), utf16(REPORT)), gp = put(path.join(G, 'page.html'), '<p>page</p>\n');
-git('init', '-q'); git('add', '.'); git('commit', '-qm', 'reports');
+git('init', '-q');
+if (!ownRepo(G)) throw new Error(`the git fixture ${G} is not its own repository`);
+git('add', '.'); git('commit', '-qm', 'reports');
 const bG = { cwd: G, session_id: 'r30g-' + Date.now() };
 gate('session', bG); gate('prompt', { ...bG, prompt: 'clean up' });
 gate('pre-bash', { ...bG, tool_use_id: 'g1', tool_name: 'Bash', tool_input: { command: 'rm -r runs page.html' } });
@@ -89,8 +101,10 @@ gate('stop', bG);
 ok(pendG(gr3), "... and an old report in the history never clears a hand-written file deleted at the same path");
 // the same in a git repository nested in a non-git session folder
 const NP = path.join(W, 'nested'), NS = path.join(NP, 'sub'); fs.mkdirSync(NS, { recursive: true });
-const gitN = (...a) => spawnSync('git', ['-c', 'user.email=t@example.com', '-c', 'user.name=t', ...a], { cwd: NS, encoding: 'utf8' });
-put(path.join(NS, 'readme.txt'), 'x'); gitN('init', '-q'); gitN('add', '.'); gitN('commit', '-qm', 'init');
+const gitN = gitIn(NS);
+put(path.join(NS, 'readme.txt'), 'x'); gitN('init', '-q');
+if (!ownRepo(NS)) throw new Error(`the nested fixture ${NS} is not its own repository`);
+gitN('add', '.'); gitN('commit', '-qm', 'init');
 const bN = { cwd: NP, session_id: 'r30n-' + Date.now() };
 gate('session', bN); gate('prompt', { ...bN, prompt: 'run the tester' });
 gate('pre-bash', { ...bN, tool_use_id: 'n1', tool_name: 'Bash', tool_input: { command: 'node smoke.js' } });
@@ -257,7 +271,7 @@ fs.writeFileSync(cf, JSON.stringify({ ...JSON.parse(orig), metaeditorPath: ME })
 const list = d => { const out = []; (function walk(x) { for (const n of fs.readdirSync(x)) { const p = path.join(x, n), st = fs.statSync(p); if (st.isDirectory()) walk(p); else out.push(`${path.relative(d, p)} ${st.size} ${st.mtimeMs}`); } })(d); return out.sort().join('\n'); };
 const compile = (file, extra = {}) => {
   fs.rmSync(REC, { force: true });
-  const r = spawnSync(process.execPath, [__G + 'gpt.js', 'mql5-compile', file], { cwd: W, encoding: 'utf8', env: { ...process.env, APPDATA, FAKE_ME_REC: REC, ...extra } });
+  const r = spawnSync(process.execPath, [__G + 'gpt.js', 'mql5-compile', file], { cwd: W, encoding: 'utf8', env: { ...ENV, APPDATA, FAKE_ME_REC: REC, ...extra } });
   let calls = []; try { calls = fs.readFileSync(REC, 'utf8').trim().split('\n').map(l => JSON.parse(l)); } catch {}
   const rec = calls[calls.length - 1] || {};
   const top = rec.src ? path.join(os.tmpdir(), path.relative(os.tmpdir(), rec.src).split(/[\\/]/)[0]) : null;
