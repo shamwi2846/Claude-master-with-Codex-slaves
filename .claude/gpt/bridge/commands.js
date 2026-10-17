@@ -402,8 +402,10 @@ const commands = {
         const rel = norm(`.claude/${parts.slice(i + 1).join('/')}`);
         // (only a file that doesn't exist counts as deleted; one that can't be read is refused)
         let buf = null; try { buf = fs.readFileSync(f); } catch (e) { if (e.code !== 'ENOENT') { bad.push(`${f}: cannot be read (${e.code || e.message})`); continue; } }
-        if (buf && rel === norm('.claude/RELEASE.txt')) {
+        if (rel === norm('.claude/RELEASE.txt')) {
           // the manifest can't list its own hash: a copy of it must be the --release file itself, byte for byte
+          // (and it is never a deletion: a release always has one)
+          if (!buf) { bad.push(`${f}: the release manifest is missing`); continue; }
           if (!buf.equals(manBuf)) { bad.push(`${f}: differs from the release manifest ${opts.release}`); continue; }
           const snap = path.join(snapDir, String(n)); fs.writeFileSync(snap, buf); snaps.push({ abs: path.resolve(f), snap });
         } else if (buf) {

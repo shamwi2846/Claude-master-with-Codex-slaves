@@ -123,6 +123,10 @@ function rest() {
   fs.rmSync(BAD);
   r = rel({}, '--gate-only');
   ok(r.status === 0 && /release gate passed/.test(r.stdout), 'nothing known unreviewed: the gate passes');
+  const libWas = fs.readFileSync(LIB); fs.appendFileSync(LIB, '\nthis is not javascript (\n');
+  r = rel({}, '--gate-only');
+  fs.writeFileSync(LIB, libWas);
+  ok(r.status === 1 && /candidate's gpt\/lib\.js does not load/.test(r.stderr) && !fs.existsSync(path.join(RB, '.candidate')), "a candidate lib.js that doesn't load is reported and the candidate removed");
   r = rel({ FAKE_FINDING: path.join(W, 'proj-late'), FAKE_FILE: LIB });
   ok(r.status === 1 && /not released \(after the checks\)/.test(r.stderr) && /late\.md/.test(r.stderr) && !fs.existsSync(path.join(RB, '.claude')), 'findings reported while the checks ran block publishing');
   L.updateState(path.join(W, 'proj-late'), s => { s.changes = {}; });
@@ -193,6 +197,8 @@ function rest() {
   fs.appendFileSync(MANCOPY, 'x');
   r = gpt('mark-reviewed', '--by', 'claude-final', '--release', MAN, '--files', MANCOPY, '--note', 'mirror');
   ok(r.status !== 0 && /differs from the release manifest/.test(r.stderr), '... and refused when it differs');
+  r = gpt('mark-reviewed', '--by', 'claude-final', '--release', MAN, '--files', path.join(W, 'nomirror', '.claude', 'RELEASE.txt'), '--note', 'mirror');
+  ok(r.status !== 0 && /the release manifest is missing/.test(r.stderr), '... and a missing mirrored manifest is refused (never a verified deletion)');
   const RAWMAN = put(path.join(W, 'RAW.txt'), Buffer.concat([Buffer.from('Released \xff\n\n', 'latin1'), Buffer.from(`${h}  .claude/gpt/lib.js\n`)])); // (malformed UTF-8 in its metadata)
   fs.writeFileSync(MF, 'released\n'); fs.writeFileSync(MANCOPY, fs.readFileSync(RAWMAN));
   ok(gpt('mark-reviewed', '--by', 'claude-final', '--release', RAWMAN, '--files', MANCOPY, '--note', 'mirror').status === 0, '... compared as raw bytes: an identical copy of a manifest with malformed UTF-8 is accepted');
@@ -225,7 +231,8 @@ function rest() {
     /value "maybe"/.test(cv(`VERDICT: NO_ISSUES\n${COV.replace('tests=not examined', 'tests=maybe')}`).badFormat) && /more than one/.test(cv(`VERDICT: NO_ISSUES\n${COV}\n${COV}`).badFormat), 'a missing, incomplete, invalid or repeated COVERAGE line is a format defect');
   ok(/contradicts the MAINTAIN\/OPEN/.test(cv(`VERDICT: RESOLVED\n1. MAINTAIN — still broken\n${COV}`).badFormat) && /contradicts the findings/.test(cv(`VERDICT: NO_ISSUES\n### [HIGH] a bug\n${COV}`).badFormat), 'a verdict that contradicts its own items is a format defect (it would clear open findings)');
   ok(cv('VERDICT: ALL_10\narea: 10/10', 'score', false).ok && cv('VERDICT: SOUND', 'plan', false).ok, 'score without files and plans need no COVERAGE line');
-  ok(['### **[HIGH]** a bug', '#### [HIGH] a bug', '## `[LOW]` a nit', '# [HIGH] a bug'].every(hd => /contradicts the findings/.test(cv(`VERDICT: RESOLVED\n${hd}\n- Location: a.js:1\n${COV}`).badFormat || '')) &&
+  ok(['### **[HIGH]** a bug', '#### [HIGH] a bug', '## `[LOW]` a nit', '# [HIGH] a bug', '> ### [HIGH] a quoted bug', '> > ## **[MEDIUM]** nested quote'].every(hd => ['RESOLVED', 'NO_ISSUES'].every(v => /contradicts the findings/.test(cv(`VERDICT: ${v}\n${hd}\n- Location: a.js:1\n${COV}`).badFormat || ''))) &&
+    /contradicts the MAINTAIN\/OPEN/.test(cv(`VERDICT: RESOLVED\n> 1. OPEN — quoted\n${COV}`).badFormat || '') &&
     ['1) MAINTAIN — x', '**1. MAINTAIN** — x', '- 2. OPEN — x', '(3) OPEN — x', '1. OPEN still broken', '1. **MAINTAIN** because x', '1. OPEN **still broken**', '1. OPEN`x`', '1.OPEN', '1. _OPEN_ — still broken', '1. __MAINTAIN__ — x', '* 1. ~~OPEN~~ x']
       .every(it => ['RESOLVED', 'NO_ISSUES'].every(v => /contradicts the MAINTAIN\/OPEN/.test(cv(`VERDICT: ${v}\n${it}\n${COV}`).badFormat || ''))),
   'finding headings at any level or decoration, and open items in any list style or emphasis (* _ ` ~), are recognised next to NO_ISSUES or RESOLVED');

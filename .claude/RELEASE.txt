@@ -1,16 +1,16 @@
-Released 2026-10-17T20:14:43.026Z
+Released 2026-10-17T20:23:05.422Z
 Source: C:/Users/Shari/.claude
-Checks: OK: 467 passed, 0 failed, 0 skipped, 45 scripts, 297s
-Tested: setup sha256 eafea7f80b55e37a, backup sha256 9f32463a44f022d1
+Checks: OK: 469 passed, 0 failed, 0 skipped, 45 scripts, 297s
+Tested: setup sha256 5350179f153df7d2, backup sha256 fc17a6fa90970ba7
 
 376b9d9b0ce41bda  .claude/CLAUDE.md
 dd336cbdcc8a6821  .claude/agents/fallback-reviewer.md
 4b5f88948bf2b38f  .claude/gpt/REFERENCE.md
 e413e5e32fb0572f  .claude/gpt/bridge/codex.js
-8d38c426a1c47d21  .claude/gpt/bridge/commands.js
+e0e9c56c6178699c  .claude/gpt/bridge/commands.js
 1fbfbfe10abbce2a  .claude/gpt/bridge/ctx.js
 87d3f857488718e0  .claude/gpt/bridge/evidence.js
-3054de2a96434e2e  .claude/gpt/bridge/prompts.js
+8427d91ec4a9c0c7  .claude/gpt/bridge/prompts.js
 fbbdc5e59ab31bf9  .claude/gpt/bridge/review.js
 32fdb7189fa852cf  .claude/gpt/bridge/write.js
 6313b76c34691c81  .claude/gpt/config.json
@@ -20,7 +20,7 @@ f768e8a7a0fd3dbe  .claude/gpt/lib.js
 e84641d62f9149c4  .claude/gpt/tests/bridge-kit.js
 75ba8ef9c0a5f9bc  .claude/gpt/tests/profile-guard.js
 66daa068afea0489  .claude/gpt/tests/prove.js
-351001e6ea63002b  .claude/gpt/tests/release.js
+71296229a4a6bbd2  .claude/gpt/tests/release.js
 c27269ba4fddf9af  .claude/gpt/tests/run.js
 8d38ca641150cc9a  .claude/gpt/tests/setup-files.js
 a3df104d2fa9c03b  .claude/gpt/tests/t_a.js
@@ -58,7 +58,7 @@ a12de5b0c976b8a2  .claude/gpt/tests/t_r27.js
 006ef4d6e17faf5e  .claude/gpt/tests/t_r29.js
 157312e3571d2fb0  .claude/gpt/tests/t_r3.js
 42b087fcc2bab63f  .claude/gpt/tests/t_r30.js
-f8bd0f4bdc98d33c  .claude/gpt/tests/t_r31.js
+1727880e1e27872a  .claude/gpt/tests/t_r31.js
 7693baddca2c3554  .claude/gpt/tests/t_r4.js
 f3852b0f5c2a358b  .claude/gpt/tests/t_r5.js
 9a462377d78234aa  .claude/gpt/tests/t_r6.js

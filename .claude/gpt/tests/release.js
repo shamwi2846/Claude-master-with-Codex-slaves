@@ -55,7 +55,8 @@ for (const f of extras) { fs.copyFileSync(path.join(backup, f), path.join(cand, 
 // review (the per-turn Stop hook is the primary control); --allow-unreviewed is the user's override only.
 const lastRelease = (() => { try { return fs.readFileSync(path.join(cur, 'RELEASE.txt'), 'utf8'); } catch { return ''; } })();
 const deleted = [...lastRelease.matchAll(/^[0-9a-f]{16} {2}\.claude\/(.+)$/gm)].map(m => m[1].trim()).filter(f => !files.includes(f));
-const Lc = require(path.join(cand, '.claude', 'gpt', 'lib.js'));
+let Lc; // (a candidate lib.js that doesn't load is reported, and the candidate removed)
+try { Lc = require(path.join(cand, '.claude', 'gpt', 'lib.js')); } catch (e) { die(`the candidate's gpt/lib.js does not load: ${e.message}`); }
 const gate = when => {
   if (args.includes('--allow-unreviewed')) return;
   const { blocked, unreadable } = Lc.knownUnreviewed(files.concat(deleted).map(f => path.join(CLAUDE, f)));

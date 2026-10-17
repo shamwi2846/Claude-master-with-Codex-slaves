@@ -50,13 +50,15 @@ function coverageDefect(text) {
 // 'finding' = a finding heading at any level ("### [HIGH] title", "## **[HIGH]**", "# `[LOW]`"); 'open' = a follow-up
 // item still open ("1. MAINTAIN", "1) OPEN", "(1) __OPEN__", "- 1. _MAINTAIN_"); 'item' = a closed one (CONCEDE /
 // RESOLVED); null = anything else. The answer text itself is never rewritten.
+// (a line without decoration (* _ ` ~ become blanks) and without leading blockquote markers "> > ")
+const bareLine = line => String(line).replace(/[*_`~]/g, ' ').replace(/^\s*(?:>\s*)+/, '');
 // (lineStatus: a follow-up item's status word, CONCEDE / RESOLVED / MAINTAIN / OPEN, or null)
 function lineStatus(line) {
-  const m = String(line).replace(/[*_`~]/g, ' ').match(/^\s*[-+]?\s*\(?\s*\d+\s*[.):]\s*(CONCEDE|RESOLVED|MAINTAIN|OPEN)\b/i);
+  const m = bareLine(line).match(/^\s*[-+]?\s*\(?\s*\d+\s*[.):]\s*(CONCEDE|RESOLVED|MAINTAIN|OPEN)\b/i);
   return m ? m[1].toUpperCase() : null;
 }
 function lineKind(line) {
-  if (/^\s*#+\s*\[\s*(CRITICAL|HIGH|MEDIUM|LOW)\s*\]/i.test(String(line).replace(/[*_`~]/g, ' '))) return 'finding';
+  if (/^\s*#+\s*\[\s*(CRITICAL|HIGH|MEDIUM|LOW)\s*\]/i.test(bareLine(line))) return 'finding';
   const st = lineStatus(line);
   return st ? (st === 'MAINTAIN' || st === 'OPEN' ? 'open' : 'item') : null;
 }
