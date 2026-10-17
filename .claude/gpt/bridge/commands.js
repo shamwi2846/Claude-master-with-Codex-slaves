@@ -388,7 +388,8 @@ const commands = {
       // where the release has no such file (a mirrored deletion). What is acknowledged is exactly the bytes
       // verified (frozen copies), never a version written after the check.
       if (!opts.release) C.die('--by claude-final is for copies of released files: add --release "<backup>/.claude/RELEASE.txt" (each file is checked against it). To close a review chain use --chain <log>.');
-      let manifest; try { manifest = fs.readFileSync(path.resolve(opts.release), 'utf8'); } catch (e) { C.die(`--release: cannot read ${opts.release}: ${e.message}`); }
+      let manBuf; try { manBuf = fs.readFileSync(path.resolve(opts.release)); } catch (e) { C.die(`--release: cannot read ${opts.release}: ${e.message}`); }
+      const manifest = manBuf.toString('utf8'); // (parsed as text; compared as the raw bytes)
       const norm = p => (process.platform === 'win32' ? p.toLowerCase() : p); // (Windows paths ignore case)
       const listed = new Map([...manifest.matchAll(/^([0-9a-f]{16}) {2}(\.claude\/.+)$/gm)].map(([, h, p]) => [norm(p.trim()), h]));
       if (!listed.size) C.die(`--release: ${opts.release} lists no released .claude files — not a release manifest`);
@@ -401,7 +402,11 @@ const commands = {
         const rel = norm(`.claude/${parts.slice(i + 1).join('/')}`);
         // (only a file that doesn't exist counts as deleted; one that can't be read is refused)
         let buf = null; try { buf = fs.readFileSync(f); } catch (e) { if (e.code !== 'ENOENT') { bad.push(`${f}: cannot be read (${e.code || e.message})`); continue; } }
-        if (buf) {
+        if (buf && rel === norm('.claude/RELEASE.txt')) {
+          // the manifest can't list its own hash: a copy of it must be the --release file itself, byte for byte
+          if (!buf.equals(manBuf)) { bad.push(`${f}: differs from the release manifest ${opts.release}`); continue; }
+          const snap = path.join(snapDir, String(n)); fs.writeFileSync(snap, buf); snaps.push({ abs: path.resolve(f), snap });
+        } else if (buf) {
           const h = require('crypto').createHash('sha256').update(buf).digest('hex').slice(0, 16);
           if (listed.get(rel) !== h) { bad.push(`${f}: ${listed.has(rel) ? 'differs from' : 'is not in'} the release`); continue; }
           const snap = path.join(snapDir, String(n)); fs.writeFileSync(snap, buf); snaps.push({ abs: path.resolve(f), snap });

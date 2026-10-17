@@ -188,6 +188,17 @@ function rest() {
   const h = S.hashOf(Buffer.from('released\n'));
   const MAN = put(path.join(W, 'RELEASE.txt'), `Released x\n\n${h}  .claude/gpt/lib.js\n`), MAN2 = put(path.join(W, 'RELEASE2.txt'), `${h}  .claude/gpt/lib.js\n${h}  .claude/gpt/old.js\n`);
   ok(gpt('mark-reviewed', '--by', 'claude-final', '--release', MAN, '--files', `${MF},${GONE}`, '--note', 'mirror').status === 0, 'claude-final --release: copies matching the release, and a deletion the release agrees with, are accepted');
+  const MANCOPY = put(path.join(RC, 'RELEASE.txt'), fs.readFileSync(MAN));
+  ok(gpt('mark-reviewed', '--by', 'claude-final', '--release', MAN, '--files', MANCOPY, '--note', 'mirror').status === 0, '... the mirrored manifest itself is accepted when it is the --release file byte for byte');
+  fs.appendFileSync(MANCOPY, 'x');
+  r = gpt('mark-reviewed', '--by', 'claude-final', '--release', MAN, '--files', MANCOPY, '--note', 'mirror');
+  ok(r.status !== 0 && /differs from the release manifest/.test(r.stderr), '... and refused when it differs');
+  const RAWMAN = put(path.join(W, 'RAW.txt'), Buffer.concat([Buffer.from('Released \xff\n\n', 'latin1'), Buffer.from(`${h}  .claude/gpt/lib.js\n`)])); // (malformed UTF-8 in its metadata)
+  fs.writeFileSync(MF, 'released\n'); fs.writeFileSync(MANCOPY, fs.readFileSync(RAWMAN));
+  ok(gpt('mark-reviewed', '--by', 'claude-final', '--release', RAWMAN, '--files', MANCOPY, '--note', 'mirror').status === 0, '... compared as raw bytes: an identical copy of a manifest with malformed UTF-8 is accepted');
+  fs.writeFileSync(MANCOPY, Buffer.from(fs.readFileSync(RAWMAN).toString('utf8'), 'utf8'));
+  r = gpt('mark-reviewed', '--by', 'claude-final', '--release', RAWMAN, '--files', MANCOPY, '--note', 'mirror');
+  ok(r.status !== 0 && /differs from the release manifest/.test(r.stderr), '... and a copy whose bytes were re-encoded (U+FFFD) is refused');
   const base = L.baselineOf(MP, MF);
   ok(base && base !== 'ABSENT' && fs.readFileSync(base, 'utf8') === 'released\n', '... and what it acknowledges is exactly the bytes it verified');
   const UNREAD = path.join(RC, 'gpt', 'locked.js'); fs.mkdirSync(UNREAD, { recursive: true }); // (exists, can't be read as a file)

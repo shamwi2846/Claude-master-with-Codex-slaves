@@ -1,13 +1,13 @@
-Released 2026-10-17T19:56:21.216Z
+Released 2026-10-17T20:06:16.554Z
 Source: C:/Users/Shari/.claude
-Checks: OK: 463 passed, 0 failed, 0 skipped, 45 scripts, 295s
-Tested: setup sha256 47fc47621beefd3a, backup sha256 98cbb5c0a36d3801
+Checks: OK: 467 passed, 0 failed, 0 skipped, 45 scripts, 296s
+Tested: setup sha256 39498a624f6c0cb0, backup sha256 4ff7ab167c09eb6b
 
 376b9d9b0ce41bda  .claude/CLAUDE.md
 dd336cbdcc8a6821  .claude/agents/fallback-reviewer.md
 4b5f88948bf2b38f  .claude/gpt/REFERENCE.md
 e413e5e32fb0572f  .claude/gpt/bridge/codex.js
-e14268cf6b97db33  .claude/gpt/bridge/commands.js
+8d38c426a1c47d21  .claude/gpt/bridge/commands.js
 1fbfbfe10abbce2a  .claude/gpt/bridge/ctx.js
 87d3f857488718e0  .claude/gpt/bridge/evidence.js
 3054de2a96434e2e  .claude/gpt/bridge/prompts.js
@@ -58,7 +58,7 @@ a12de5b0c976b8a2  .claude/gpt/tests/t_r27.js
 006ef4d6e17faf5e  .claude/gpt/tests/t_r29.js
 157312e3571d2fb0  .claude/gpt/tests/t_r3.js
 42b087fcc2bab63f  .claude/gpt/tests/t_r30.js
-04d1f747904599ff  .claude/gpt/tests/t_r31.js
+f8bd0f4bdc98d33c  .claude/gpt/tests/t_r31.js
 7693baddca2c3554  .claude/gpt/tests/t_r4.js
 f3852b0f5c2a358b  .claude/gpt/tests/t_r5.js
 9a462377d78234aa  .claude/gpt/tests/t_r6.js
