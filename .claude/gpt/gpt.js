@@ -16,7 +16,8 @@
 //   gpt.js write    --revise <stage-id> --brief-file <feedback.md>      (Claude's review feedback)
 //   gpt.js apply <stage-id> [--force]  |  gpt.js discard <stage-id>
 //   gpt.js note [<log.md>] --text "..." | --file f      (append Claude's decisions to a log; default: the latest)
-//   gpt.js mark-reviewed --by claude-final|claude-fallback|user-declined [--files a,b] --note "..."
+//   gpt.js mark-reviewed --chain <log> --files a,b --note "..."   (close one review chain on those files)
+//   gpt.js mark-reviewed --by claude-final --release <RELEASE.txt> | claude-fallback | user-declined --files a,b --note "..."
 //   gpt.js allow-claude-cu --reason "<why Claude does computer use itself>" [--minutes N]
 //   gpt.js lesson [--text "..." | --remove N]    (list / add / remove project lessons)
 //   gpt.js doctor [--live]  |  gpt.js stats [--all]  |  gpt.js mql5-compile <file.mq5>

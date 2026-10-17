@@ -113,7 +113,8 @@ const STUB = put(path.join(W, 'codex-rec.js'),
   `  fs.appendFileSync(${JSON.stringify(REC)}, JSON.stringify({ a, input }) + '\\n');\n` +
   `  const mode = process.env.STUB_MODE || '', resume = a[1] === 'resume';\n` +
   `  if (mode === 'failfirst' && n === 0) { process.stderr.write('error: stream disconnected\\n'); process.exit(1); }\n` +
-  `  const text = mode === 'badfirst' && n === 0 ? 'I looked around.' : resume ? 'VERDICT: RESOLVED\\n1. RESOLVED — ok' : 'VERDICT: NO_ISSUES';\n` +
+  `  const cov = '\\nCOVERAGE: inputs/encodings=checked; failure/timeout/cleanup=checked; concurrency/stale state=n/a; callers/interfaces=checked; tests=not examined';\n` +
+  `  const text = mode === 'badfirst' && n === 0 ? 'I looked around.' : (resume ? 'VERDICT: RESOLVED\\n1. RESOLVED — ok' : 'VERDICT: NO_ISSUES') + cov;\n` +
   `  fs.writeFileSync(a[a.indexOf('-o') + 1], text); console.log('session id: 11111111-2222-3333-4444-555555555555'); });\n`);
 const cf = path.join(L.HOME, 'config.json'), orig = fs.readFileSync(cf, 'utf8');
 fs.writeFileSync(cf, JSON.stringify({ ...JSON.parse(orig), codexJs: STUB }));
@@ -126,7 +127,8 @@ try {
   const r1 = gpt({}, 'review', '--task', 'check the EA', '--files', EA);
   const c1 = calls();
   ok(r1.status === 0 && c1.length === 1 && docsIn(c1[0]) && lock(c1[0].a), `an MQL5 review runs with the docs and the lockdown (exit ${r1.status})`);
-  const log1 = (r1.stdout.match(/log: (\S+\.md)/) || [])[1];
+  const logOf = out => (out.match(/\[gpt\.js\] log: (.+?\.md)(?: \(|$)/m) || [])[1]; // (a path may contain spaces)
+  const log1 = logOf(r1.stdout);
   ok(!!log1 && /- MQL5 docs: on/.test(fs.readFileSync(log1, 'utf8')), 'the run log records the docs as on');
   const resp = put(path.join(W, 'resp.md'), '1. fixed\n');
   const r2 = gpt({}, 'review', '--followup', log1, '--file', resp);
@@ -135,7 +137,7 @@ try {
   // --mql5-docs on other files: kept by its follow-up, also a fresh one (no flag repeated)
   fs.rmSync(REC, { force: true });
   const rf = gpt({}, 'review', '--task', 'check the tool', '--files', JS, '--mql5-docs');
-  const logF = (rf.stdout.match(/log: (\S+\.md)/) || [])[1];
+  const logF = logOf(rf.stdout);
   const rf2 = gpt({}, 'review', '--followup', logF, '--file', resp, '--fresh');
   const cf2 = calls();
   ok(rf.status === 0 && rf2.status === 0 && cf2.length === 2 && docsIn(cf2[0]) && cf2[1].a[1] !== 'resume' && docsIn(cf2[1]), 'a forced docs run keeps them in its follow-ups (fresh session too)');

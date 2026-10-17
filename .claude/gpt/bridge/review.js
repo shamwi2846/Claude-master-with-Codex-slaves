@@ -199,17 +199,25 @@ function locationPaths(line) {
 // Which files do the findings point at? Returns a Set of lowercase paths, or null when any finding's
 // location can't be mapped confidently (then every reviewed file stays open — the safe default).
 function findingFiles(text, mat, files) {
-  // Open items: new findings (### headers) and follow-up lines marked MAINTAIN or OPEN (carried forward).
-  const blocks = text.split(/\n(?=###\s|\d+\.\s+(?:MAINTAIN|OPEN)\b)/).filter(b => /^(###\s|\d+\.\s+(?:MAINTAIN|OPEN)\b)/.test(b.trim()));
+  // Open items: new findings (headings) and follow-up lines marked MAINTAIN or OPEN (carried forward), each with
+  // the lines after it up to the next item — found by P.lineKind, the same parser the answer checks use.
+  const blocks = [];
+  let cur = null;
+  for (const l of String(text || '').split('\n')) {
+    const k = P.lineKind(l);
+    if (k === 'finding' || k === 'open') blocks.push(cur = [l]);
+    else if (k === 'item') cur = null;
+    else if (cur) cur.push(l);
+  }
   if (!blocks.length) return null;
   const bySnap = new Map(mat.map.filter(x => x.snap).map(x => [path.resolve(x.snap).toLowerCase(), x.abs]));
   const inFiles = new Map(files.map(f => [path.resolve(f).toLowerCase(), path.resolve(f)]));
   const byBase = {};
   for (const f of files) (byBase[path.basename(f).toLowerCase()] = byBase[path.basename(f).toLowerCase()] || []).push(path.resolve(f));
   const out = new Set();
-  for (const b of blocks) {
+  for (const blk of blocks) {
     // Every path:line reference on every Location line (a finding may span several files).
-    const lines = [...b.matchAll(/Location:([^\n]*)/gi)].map(m => m[1]);
+    const lines = [...blk.join('\n').matchAll(/Location:([^\n]*)/gi)].map(m => m[1]);
     const locs = lines.flatMap(locationPaths);
     if (!locs.length) return null;
     for (const p of locs) {
@@ -236,7 +244,7 @@ async function investigate(targets) {
     (opts.expected ? `\nEXPECTED: ${opts.expected}\n` : '') + (opts.actual ? `ACTUAL: ${opts.actual}\n` : '') +
     (opts.tried ? `\nALREADY TRIED (did not fix it): ${opts.tried}\n` : '') +
     `\nLOOK AT:\n${targets.map(t => '- ' + t).join('\n')}\n` +
-    (mat ? `\nCLAUDE'S RECENT UNCOMMITTED CHANGES (possible cause):${mat.text}` : '') + (await E.evidence()) + P.lessonsBlock() + P.docsBlock(docs) +
+    (mat ? `\nCLAUDE'S RECENT UNCOMMITTED CHANGES (possible cause):${mat.text}` : '') + (await E.evidence(mat && mat.map)) + P.lessonsBlock() + P.docsBlock(docs) +
     `\nRULES: search first, read only the relevant regions, at most about 10 short read-only commands. Do NOT run tests, builds or scripts and do not build reproductions — recommend checks in words instead. Mark each evidence item [code] (inferred from reading) or [runtime] (seen in logs/output).\n\n` +
     `Answer compactly (under ${opts.max || 350} words):\nDIAGNOSIS: the supported cause, or "UNRESOLVED" plus the competing hypotheses ranked\nEVIDENCE: up to 8 bullets "path:line [code|runtime] — short quote/value"\n` +
     `NEXT CHECK: the single check that best confirms or rules out the diagnosis\nFIX IDEA: in words (Claude writes the code)\nCONFIDENCE: high | medium | low`;
@@ -298,7 +306,8 @@ async function reviewFollowup(effort, deletedAtStart) {
   const prev = fs.readFileSync(prevLog, 'utf8');
   const round = (Number((prev.match(/- Round: (\d+)/) || [])[1]) || 1) + 1;
   if (round > cfg.maxRounds) {
-    console.log(`MAX_ROUNDS_REACHED (${cfg.maxRounds}). Claude makes the final decision now: gpt.js mark-reviewed --by claude-final --files "..." --note "..."`);
+    console.log(`MAX_ROUNDS_REACHED (${cfg.maxRounds}). Fixes made since the last round still need a review: run a fresh review of the fixed files whose --task quotes every still-open finding and its trigger. ` +
+      `When it resolves them, close this chain: gpt.js mark-reviewed --chain "${prevLog}" --files "..." --note "superseded by <new log>". A finding rejected as not real: the same --chain with --note "<evidence for each finding>". A confirmed finding still open is unfinished work: tell the user.`);
     process.exit(4);
   }
   if (!opts.file) C.die('--followup needs --file <your response to each finding>');
@@ -311,9 +320,9 @@ async function reviewFollowup(effort, deletedAtStart) {
   registerRunning(files, cutoff, X.sigOf('followup', prevLog, response, opts.evidence || '', opts['evidence-file'] || ''), mat.map);
   // (a round of a run that had the MQL5 reference — or was told it's unavailable — keeps that, e.g. --mql5-docs)
   const docs = X.docsFor(files, opts['mql5-docs'] || /^- MQL5 docs: /m.test(prev));
-  const tail = `${mat.text}${await E.evidence()}${P.docsBlock(docs)}\n${P.EFFORT_RULES}\nFOLLOW-UP SCOPE: re-check ONLY (a) the findings Claude's response disputes or claims fixed and (b) behaviour affected by the new diff. The diff above shows exactly what changed since your last review: start there and read only the specific lines you need — do not re-read whole files. Do not re-verify findings already RESOLVED/CONCEDED earlier unless the new diff touches them. If you maintain a finding, give stronger concrete evidence (exact trigger -> wrong result). Concede when Claude is right.\n\n` +
+  const tail = `${mat.text}${await E.evidence(mat.map)}${P.docsBlock(docs)}\n${P.EFFORT_RULES}\nFOLLOW-UP SCOPE: re-check ONLY (a) the findings Claude's response disputes or claims fixed and (b) behaviour affected by the new diff. The diff above shows exactly what changed since your last review: start there and read only the specific lines you need — do not re-read whole files. Do not re-verify findings already RESOLVED/CONCEDED earlier unless the new diff touches them. If you maintain a finding, give stronger concrete evidence (exact trigger -> wrong result). Concede when Claude is right.\n\n` +
     `Format (compact):\nVERDICT: RESOLVED | ISSUES_REMAIN — RESOLVED only if EVERY earlier finding is now resolved or conceded; a finding Claude's response does not address is still open (carry it forward without re-verifying it).\n` +
-    `One line per earlier finding: "<n>. CONCEDE | RESOLVED | MAINTAIN | OPEN — <one-sentence reason>" (OPEN = not addressed by Claude). For every MAINTAIN and OPEN line add "- Location: file:line". Then NEW confirmed defects only:\n${P.FINDING_FORMAT}No preamble, no links.`;
+    `One line per earlier finding: "<n>. CONCEDE | RESOLVED | MAINTAIN | OPEN — <one-sentence reason>" (OPEN = not addressed by Claude). For every MAINTAIN and OPEN line add "- Location: file:line". Then EVERY new confirmed defect, most severe first, each at most 5 lines:\n${P.FINDING_FORMAT}${P.COVERAGE_RULE}No preamble, no links.`;
   // The whole chain: its open findings are what this round re-checks (and may clear).
   const chain = chainLogs(prevLog);
   const { task: taskLine, focus: focusLine } = followupContext(chain);
@@ -325,7 +334,7 @@ async function reviewFollowup(effort, deletedAtStart) {
   // Fast path: resume GPT's own session from the previous round (it still has the code in context).
   const sid = (prev.match(/^- Session: (\S+)$/m) || [])[1];
   if (sid && !opts.fresh) {
-    const r = await X.ask({ mode: `review-r${round}`, prompt: `Round ${round} of ${cfg.maxRounds} of our review discussion. ${P.READONLY_NOTE}\n\nCLAUDE'S RESPONSE (fixes made / findings disputed, with reasoning):\n${response}\n${tail}`, effort, sandbox: 'read-only', resume: sid, noRetry: true, meta, docs: docs && docs.def });
+    const r = await X.ask({ mode: `review-r${round}`, prompt: `Round ${round} of ${cfg.maxRounds} of our review discussion. ${P.READONLY_NOTE}\n\nCLAUDE'S RESPONSE (fixes made / findings disputed, with reasoning):\n${response}\n${tail}`, effort, sandbox: 'read-only', resume: sid, noRetry: true, requireCoverage: true, meta, docs: docs && docs.def });
     if (r.ok || !X.retryable(r)) return done(r);
     console.error(`[gpt.js] resuming session failed (${r.reason}); running a fresh round instead...`);
   }
@@ -333,7 +342,7 @@ async function reviewFollowup(effort, deletedAtStart) {
   const prevAnswer = roundHistory(chain).map((h, i) => `--- Round ${i + 1} ---\n${h}`).join('\n\n');
   const r = await X.ask({ mode: `review-r${round}`, prompt: `${P.ROLE}\n${P.READONLY_NOTE}\n\nThis is round ${round} of ${cfg.maxRounds} of a review discussion.\n` +
     (taskLine ? `\nORIGINAL TASK / REQUIREMENTS:\n${taskLine}\n` : '') + (focusLine ? `FOCUS: ${focusLine}\n` : '') +
-    `\nYOUR EARLIER REVIEW ROUNDS:\n${prevAnswer}\n\nCLAUDE'S RESPONSE (fixes made / findings disputed, with reasoning):\n${response}\n${tail}`, effort, sandbox: 'read-only', persist: true, meta, docs: docs && docs.def });
+    `\nYOUR EARLIER REVIEW ROUNDS:\n${prevAnswer}\n\nCLAUDE'S RESPONSE (fixes made / findings disputed, with reasoning):\n${response}\n${tail}`, effort, sandbox: 'read-only', persist: true, requireCoverage: true, meta, docs: docs && docs.def });
   return done(r);
 }
 
@@ -370,13 +379,13 @@ async function review() {
   const docs = X.docsFor(files, opts['mql5-docs']);
   const prompt = `${P.ROLE}\nYour job: an independent, rigorous code review. ${P.READONLY_NOTE}\n\nWHAT THE CHANGE IS MEANT TO ACCOMPLISH:\n${opts.task}\n` +
     (opts.focus ? `\nFOCUS AREAS: ${opts.focus}\n` : '') +
-    mat.text + (await E.evidence()) + P.lessonsBlock() + P.mql5Block(files) + P.docsBlock(docs) +
+    mat.text + (await E.evidence(mat.map)) + P.lessonsBlock() + P.mql5Block(files) + P.docsBlock(docs) +
     `\nStart from the DIFF. Read surrounding code in the project (callers, callees, definitions) only as needed to verify behaviour; read whole files only when the diff is not enough.\n` +
     `Look for: correctness bugs, unhandled edge cases, error handling, wrong assumptions about APIs, security issues, concurrency/race issues, data loss, resource leaks, and for trading code order/position/lot/stop-loss/risk logic. Also flag a design decision that is clearly wrong or will be hard to undo. Ignore pure style/formatting.\n\n` +
     `${P.EFFORT_RULES}BEFORE REPORTING: confirm every candidate finding (re-read the code path, check callers, trace the failing input). Drop anything you could not confirm — Claude must re-verify each finding, so false positives are costly.\n\n` +
-    `Format (compact — Claude's reading budget is limited):\nVERDICT: NO_ISSUES | ISSUES_FOUND\nThen, most severe first, max 10 CONFIRMED findings, each at most 5 lines:\n${P.FINDING_FORMAT}` +
-    `No preamble, no praise, no summary of what you checked, no links.`;
-  const r = await X.ask({ mode: 'review', prompt, effort, sandbox: 'read-only', persist: true, docs: docs && docs.def, meta: `- Round: 1\n- Task: ${String(opts.task).replace(/\s+/g, ' ')}\n${opts.focus ? `- Focus: ${String(opts.focus).replace(/\s+/g, ' ')}\n` : ''}- Scope: ${scope ? JSON.stringify(scope) : 'ALL'}\n- Files: ${JSON.stringify(files)}\n${X.docsLine(docs)}` });
+    `Format (compact — Claude's reading budget is limited):\nVERDICT: NO_ISSUES | ISSUES_FOUND\nThen EVERY confirmed finding, most severe first, each at most 5 lines:\n${P.FINDING_FORMAT}${P.COVERAGE_RULE}` +
+    `No preamble, no praise, no links, and no summary of what you checked beyond the COVERAGE line.`;
+  const r = await X.ask({ mode: 'review', prompt, effort, sandbox: 'read-only', persist: true, requireCoverage: true, docs: docs && docs.def, meta: `- Round: 1\n- Task: ${String(opts.task).replace(/\s+/g, ' ')}\n${opts.focus ? `- Focus: ${String(opts.focus).replace(/\s+/g, ' ')}\n` : ''}- Scope: ${scope ? JSON.stringify(scope) : 'ALL'}\n- Files: ${JSON.stringify(files)}\n${X.docsLine(docs)}` });
   const dropSnap = () => { try { fs.rmSync(mat.snapDir, { recursive: true, force: true }); } catch {} };
   if (!r.ok) { X.markUnavailable(r.reason); dropSnap(); }
   // Acknowledge exactly the files that were frozen and shown to GPT — nothing else.
@@ -388,8 +397,32 @@ async function review() {
 // `deletedAtStart`: files git reported deleted when the review STARTED. Only those deletions count as
 // reviewed; anything deleted later stays a fresh change for the Stop hook.
 // `info`: { verdict, log, snaps } from a GPT review. Review status per file:
-//   clean (NO_ISSUES/RESOLVED) | findings (ISSUES_FOUND/ISSUES_REMAIN: open until fixed+re-reviewed or
-//   accepted) | accepted (claude-final) | fallback (claude-fallback) | declined (user-declined).
+//   clean (NO_ISSUES/RESOLVED) | findings (ISSUES_FOUND/ISSUES_REMAIN: open until fixed and re-reviewed, or
+//   their chain is closed) | accepted (claude-final, or its last chain closed) | fallback (claude-fallback) |
+//   declined (user-declined).
+// `mark-reviewed --chain <log>`: closes ONE review chain on the listed files — the logs of that chain are removed
+// from their open findings. Nothing else changes: pending changes stay pending, other chains stay open,
+// baselines and review times are untouched. The decision (`note`) is appended to the chain's own log.
+// Returns the files whose findings it closed (none: the chain isn't open on any of them).
+function closeChain(log, scope, note) {
+  const abs = path.resolve(log);
+  const chain = new Set(chainLogs(abs).map(l => path.resolve(l).toLowerCase()));
+  const inScope = new Set(scope.map(f => path.resolve(f).toLowerCase()));
+  const closed = [];
+  L.updateState(C.root, s => {
+    for (const [f, c] of Object.entries(s.changes || {})) {
+      if (!inScope.has(f.toLowerCase()) || !c.openFindings) continue;
+      const before = [].concat(c.openFindings), left = before.filter(l => !chain.has(path.resolve(l).toLowerCase()));
+      if (left.length === before.length) continue;
+      closed.push(f);
+      if (left.length) c.openFindings = left;
+      else { delete c.openFindings; if (c.reviewStatus === 'findings') c.reviewStatus = 'accepted'; }
+    }
+  });
+  if (closed.length) fs.appendFileSync(abs, `- ${new Date().toLocaleString()}: CHAIN CLOSED by Claude on ${closed.join(', ')}: ${note}\n`);
+  return closed;
+}
+
 function markReviewed(by, at, scope, deletedAtStart, info = {}) {
   const root = C.root;
   const startDel = new Set((deletedAtStart || []).map(f => path.resolve(f).toLowerCase()));
@@ -429,9 +462,11 @@ function markReviewed(by, at, scope, deletedAtStart, info = {}) {
         // mapping is unsure, findingFiles is null and every reviewed file stays open.
         const hit = status === 'findings' && (!info.findingFiles || info.findingFiles.has(f.toLowerCase()));
         // Earlier open findings (one log per review chain) are cleared only by what re-checked them: a
-        // follow-up of their own chain, or an explicit decision (mark-reviewed). A fresh or concurrent
-        // review never saw them, so they stay open.
-        let open = by === 'gpt' ? [].concat(c.openFindings || []).filter(l => !resolves.has(path.resolve(l).toLowerCase())) : [];
+        // follow-up of their own chain, or Claude closing that one chain (mark-reviewed --chain, closeChain).
+        // A fresh or concurrent review never saw them, and a manual acknowledgement (a mirror copy, a fallback
+        // review, the user's decline) doesn't dispose of them, so they stay open.
+        let open = [].concat(c.openFindings || []);
+        if (by === 'gpt') open = open.filter(l => !resolves.has(path.resolve(l).toLowerCase()));
         if (hit) open = [...new Set(open.concat(info.log))];
         c.reviewStatus = open.length ? 'findings' : status === 'findings' ? 'clean' : status;
         if (open.length) c.openFindings = open; else delete c.openFindings;
@@ -488,17 +523,17 @@ async function score() {
   const docs = X.docsFor(files, opts['mql5-docs']);
   const prompt = `${P.ROLE}\nYour job: SCORE this project against the rubric below. Apply the rubric as written — do not critique, rewrite or extend it. ${P.READONLY_NOTE}\n\nRUBRIC FROM CLAUDE:\n${rubric}\n` +
     (mat ? `\nALSO REVIEW these files as an independent, rigorous code reviewer (correctness, edge cases, error handling, security, concurrency, data loss, trading order/position/lot/stop-loss/risk logic); each confirmed defect lowers the score of its area.${mat.text}` : '') +
-    (await E.evidence()) + P.lessonsBlock() + (mat ? P.mql5Block(files) : '') + P.docsBlock(docs) +
+    (await E.evidence(mat && mat.map)) + P.lessonsBlock() + (mat ? P.mql5Block(files) : '') + P.docsBlock(docs) +
     `\n${P.EFFORT_RULES}\nFormat (compact):\nVERDICT: ALL_10 | BELOW_10 — ALL_10 only if every area scores 10${mat ? ' and you found no defect in the reviewed files' : ''}.\n` +
     `Then one line per area: "<area>: <score>/10 — <what keeps it below 10, or: nothing worth its cost>".\n` +
-    (mat ? `Then the confirmed defects, most severe first (max 10, each at most 5 lines):\n${P.FINDING_FORMAT}` : '') + `No preamble, no praise.`;
-  const r = await X.ask({ mode: 'score', prompt, effort, sandbox: 'read-only', persist: true, docs: docs && docs.def,
+    (mat ? `Then EVERY confirmed defect, most severe first, each at most 5 lines:\n${P.FINDING_FORMAT}${P.COVERAGE_RULE}` : '') + `No preamble, no praise.`;
+  const r = await X.ask({ mode: 'score', prompt, effort, sandbox: 'read-only', persist: true, requireCoverage: !!mat, docs: docs && docs.def,
     meta: (mat ? `- Round: 1\n- Task: score against the rubric (${opts.file}) and review the files\n- Scope: ${JSON.stringify(files)}\n- Files: ${JSON.stringify(files)}\n` : '') + X.docsLine(docs) });
   const dropSnap = () => { if (mat) try { fs.rmSync(mat.snapDir, { recursive: true, force: true }); } catch {} };
   if (!r.ok) { X.markUnavailable(r.reason); dropSnap(); }
   return X.finish(r, () => {
     if (!mat) return;
-    const found = /^###\s*\[(CRITICAL|HIGH|MEDIUM|LOW)\]/im.test(r.text);
+    const found = P.hasFinding(r.text) || P.hasOpenItem(r.text); // (an open item is a finding too)
     markReviewed('gpt', cutoff, files, deletedAtStart, { verdict: found ? 'ISSUES_FOUND' : 'NO_ISSUES', log: r.log, snaps: mat.map, findingFiles: found ? findingFiles(r.text, mat, files) : new Set() });
     keepRound(r.log, mat.map); dropSnap();
   });
@@ -506,5 +541,5 @@ async function score() {
 
 module.exports = {
   NULL_DEV, noIndexDiff, freezePrior, frozenList, reviewMaterial, keepRound, roundBases, registerRunning,
-  locationPaths, findingFiles, investigate, metaField, chainLogs, followupContext, roundHistory, reviewFollowup, review, markReviewed, score,
+  locationPaths, findingFiles, investigate, metaField, chainLogs, followupContext, roundHistory, reviewFollowup, review, markReviewed, closeChain, score,
 };

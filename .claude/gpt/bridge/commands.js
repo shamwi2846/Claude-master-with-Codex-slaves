@@ -357,13 +357,70 @@ const commands = {
     console.log('noted');
   },
 
+  // Two different acts (CLAUDE.md "Review protocol"):
+  //   --chain <log>: close ONE review chain on the files (a finding rejected with evidence, or a chain a later
+  //     resolved review superseded) — only that chain's findings go; nothing else changes (review.closeChain).
+  //   --by claude-final | claude-fallback | user-declined: acknowledge the current content of the files (repo
+  //     copies of released files, checked against --release; a fallback review; the user's decline). Open
+  //     findings stay open: only a GPT follow-up of their chain or --chain disposes of them.
+  // Always for the files named in --files, never project-wide.
   'mark-reviewed'() {
     const { opts } = C;
-    if (!opts.note) C.die('mark-reviewed needs --note "<why GPT review was skipped / what reviewed it>"');
-    const scope = opts.files ? C.files(opts.files) : null;
-    R.markReviewed(opts.by || 'claude-fallback', Date.now(), scope, L.gitDeleted(C.root));
-    fs.writeFileSync(path.join(C.logDir(), `${C.stamp()}_skipped_${Math.random().toString(36).slice(2, 6)}.md`), `# GPT review skipped\n\n- By: ${opts.by || 'claude-fallback'}\n- Note: ${opts.note}\n`);
-    console.log('marked reviewed');
+    if (!opts.note) C.die('mark-reviewed needs --note "<the evidence, or what reviewed it>"');
+    if (!opts.files) C.die('mark-reviewed needs --files "<file,...>": it only ever acts on the files it names');
+    const scope = C.files(opts.files);
+    if (!scope.length) C.die('mark-reviewed: --files names no file');
+    if (opts.chain) {
+      const log = path.resolve(opts.chain);
+      if (!fs.existsSync(log)) C.die(`--chain: no such review log ${opts.chain}`);
+      const closed = R.closeChain(log, scope, opts.note);
+      if (!closed.length) C.die(`--chain: that review chain has no open findings on ${scope.join(', ')} — nothing was closed`);
+      console.log(`closed review chain ${log} on: ${closed.join(', ')} (other findings and pending changes untouched)`);
+      return;
+    }
+    const BY = ['claude-final', 'claude-fallback', 'user-declined'];
+    if (!BY.includes(opts.by)) C.die(`mark-reviewed --by must be one of ${BY.join(', ')}${opts.by ? ` (not "${opts.by}")` : ''}; to close a review chain use --chain <log>`);
+    // (taken before anything is read: an edit after this moment stays pending)
+    const at = Date.now();
+    let snaps, snapDir = null;
+    if (opts.by === 'claude-final') {
+      // Copies of released files (e.g. the repo mirror): each must be byte-identical to the release, or gone
+      // where the release has no such file (a mirrored deletion). What is acknowledged is exactly the bytes
+      // verified (frozen copies), never a version written after the check.
+      if (!opts.release) C.die('--by claude-final is for copies of released files: add --release "<backup>/.claude/RELEASE.txt" (each file is checked against it). To close a review chain use --chain <log>.');
+      let manBuf; try { manBuf = fs.readFileSync(path.resolve(opts.release)); } catch (e) { C.die(`--release: cannot read ${opts.release}: ${e.message}`); }
+      const manifest = manBuf.toString('utf8'); // (parsed as text; compared as the raw bytes)
+      const norm = p => (process.platform === 'win32' ? p.toLowerCase() : p); // (Windows paths ignore case)
+      const listed = new Map([...manifest.matchAll(/^([0-9a-f]{16}) {2}(\.claude\/.+)$/gm)].map(([, h, p]) => [norm(p.trim()), h]));
+      if (!listed.size) C.die(`--release: ${opts.release} lists no released .claude files — not a release manifest`);
+      const bad = [];
+      snapDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gpt-ack-'));
+      snaps = [];
+      for (const [n, f] of scope.entries()) {
+        const parts = path.resolve(f).split(path.sep), i = parts.map(p => p.toLowerCase()).lastIndexOf('.claude');
+        if (i < 0) { bad.push(`${f}: not inside a .claude folder`); continue; }
+        const rel = norm(`.claude/${parts.slice(i + 1).join('/')}`);
+        // (only a file that doesn't exist counts as deleted; one that can't be read is refused)
+        let buf = null; try { buf = fs.readFileSync(f); } catch (e) { if (e.code !== 'ENOENT') { bad.push(`${f}: cannot be read (${e.code || e.message})`); continue; } }
+        if (rel === norm('.claude/RELEASE.txt')) {
+          // the manifest can't list its own hash: a copy of it must be the --release file itself, byte for byte
+          // (and it is never a deletion: a release always has one)
+          if (!buf) { bad.push(`${f}: the release manifest is missing`); continue; }
+          if (!buf.equals(manBuf)) { bad.push(`${f}: differs from the release manifest ${opts.release}`); continue; }
+          const snap = path.join(snapDir, String(n)); fs.writeFileSync(snap, buf); snaps.push({ abs: path.resolve(f), snap });
+        } else if (buf) {
+          const h = require('crypto').createHash('sha256').update(buf).digest('hex').slice(0, 16);
+          if (listed.get(rel) !== h) { bad.push(`${f}: ${listed.has(rel) ? 'differs from' : 'is not in'} the release`); continue; }
+          const snap = path.join(snapDir, String(n)); fs.writeFileSync(snap, buf); snaps.push({ abs: path.resolve(f), snap });
+        } else if (listed.has(rel)) bad.push(`${f}: deleted, but the release still has it`);
+        else snaps.push({ abs: path.resolve(f), snap: null });
+      }
+      if (bad.length) { fs.rmSync(snapDir, { recursive: true, force: true }); C.die(`--by claude-final: not copies of the release ${opts.release}:\n  ${bad.join('\n  ')}`); }
+    }
+    try { R.markReviewed(opts.by, at, scope, L.gitDeleted(C.root), snaps ? { snaps } : {}); }
+    finally { if (snapDir) fs.rmSync(snapDir, { recursive: true, force: true }); }
+    fs.writeFileSync(path.join(C.logDir(), `${C.stamp()}_skipped_${Math.random().toString(36).slice(2, 6)}.md`), `# GPT review skipped\n\n- By: ${opts.by}\n- Files: ${scope.join(', ')}\n- Note: ${opts.note}\n`);
+    console.log('marked reviewed (any open findings on these files stay open)');
   },
 
   'allow-claude-cu'() {

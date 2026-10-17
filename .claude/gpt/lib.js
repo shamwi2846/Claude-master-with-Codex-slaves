@@ -1109,6 +1109,27 @@ function pendingAnywhere(file) {
   return false;
 }
 
+// The release backstop: which of `files` (absolute paths) some project's state still knows as unreviewed (a
+// pending change, or open findings), across EVERY state file, and which state files can't be read. Not proof
+// that the rest was reviewed — only what the trackers know. Returns { blocked: [{ file, root, why }], unreadable }.
+function knownUnreviewed(files) {
+  const want = new Set(files.map(f => path.resolve(f).toLowerCase()));
+  const blocked = [], unreadable = [];
+  // (no state folder yet = nothing known; one that can't be listed = every record unknown)
+  let names = []; try { names = fs.readdirSync(STATE_DIR).filter(f => /^[0-9a-f]{12}\.json$/.test(f)); } catch (e) { if (e.code !== 'ENOENT') unreadable.push(`${STATE_DIR} (${e.code || e.message})`); }
+  for (const n of names) {
+    let s; try { s = JSON.parse(fs.readFileSync(path.join(STATE_DIR, n), 'utf8')); } catch { s = null; }
+    if (!s || typeof s !== 'object' || Array.isArray(s)) { unreadable.push(path.join(STATE_DIR, n)); continue; }
+    for (const [f, c] of Object.entries(s.changes || {})) {
+      if (!c || !want.has(path.resolve(f).toLowerCase())) continue;
+      const open = [].concat(c.openFindings || []);
+      if (open.length) blocked.push({ file: f, root: s.root || n, why: `open findings (${open.join(', ')})` });
+      else if (c.at > reviewedAtFor(s, c)) blocked.push({ file: f, root: s.root || n, why: 'unreviewed change' });
+    }
+  }
+  return { blocked, unreadable };
+}
+
 // Record changes that are not tracked (newest 50), for `gpt.js status`. items: [[file, why]].
 function noteNotAuthored(s, items) {
   const listed = new Set((s.notAuthored || []).map(x => `${x.file.toLowerCase()}|${x.why}`)); // (later scans see it again)
@@ -1364,5 +1385,5 @@ module.exports = {
   projectSettings, projectFileSettings, setupSwitch, setupOffThroughout, startDiscoveryWindow, isCode, countLines, pending, reviewedAtFor, isSignificant, gitStatus, gitDeleted, gitChangedCode, minutesAgo,
   SENSITIVE_PATH, SENSITIVE_CONTENT, docTargetProblem, fileHash,
   codeSnapshot, statePath, pidAlive, isSensitiveFile, keepCommit, printOf, saveTurnPrints, readTurnPrints, changedByContentThisTurn, validateConfig, CONFIG_DEFAULTS, hookIssue, hookTime, recentHookIssues, HOOK_TIMES, sameAsBaseline, differsFromRev, revPrint, gitIgnored, DOCS_SERVER, DOCS_TOOLS, readDocsServer, mql5DocsServer, shellPrints, watchedIgnored, globalSetupFiles, changeKey, gitHead, gitCommittedSince, sessionRoot, knownSessionRoot, captureBaseline, setBaseline, baselineOf, lessonsFile, readLessons, quickChecks, cleanup, textSimilarity, HOOK_FIELDS,
-  REVIEWABLE_CONFIG, isTesterReport, ignoredByProject, gitNotAuthored, repoStates, branchSwitch, noteNotAuthored, shareReceipt, pendingAnywhere,
+  REVIEWABLE_CONFIG, isTesterReport, ignoredByProject, gitNotAuthored, repoStates, branchSwitch, noteNotAuthored, shareReceipt, pendingAnywhere, knownUnreviewed,
 };

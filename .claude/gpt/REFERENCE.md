@@ -9,6 +9,8 @@
     - A path that exists in neither place must be a known deletion; otherwise the call stops before GPT is called (the same applies to `score`, `digest` and `testplan`).
   - `--full` does a whole-file audit; it's automatic when nothing changed.
 - **Follow-up:** `review --followup <log.md> --file <response.md> [--fresh]`. It resumes GPT's session, so it's fast. Unaddressed findings come back marked OPEN.
+- **Answer checks:** every code review (first round, follow-up, `score --files`, the fallback reviewer) reports every confirmed finding, with no cap, and ends with `COVERAGE: inputs/encodings=…; failure/timeout/cleanup=…; concurrency/stale state=…; callers/interfaces=…; tests=…` (each `checked`, `n/a` or `not examined`). gpt.js asks for one repair when that line is missing or malformed, or when the verdict contradicts the answer (NO_ISSUES/RESOLVED next to listed findings or MAINTAIN/OPEN items); otherwise the review counts as not done.
+- **Evidence labels:** GPT is told how the evidence relates to the reviewed version: `--evidence` commands ran on the live project, which matched (or DIFFERED from) the frozen review copy before and after them; an `--evidence-file` is unverified, plus the reviewed files changed after it was written.
 - **MQL5 evidence:** `--evidence 'node "C:/Users/Shari/.claude/gpt/gpt.js" mql5-compile "<file.mq5>"'`. Keep the inner quotes.
   - It compiles a temporary copy of the file, its includes and resources, so the project's `.ex5` and logs are never touched (a tester run can keep going).
   - If the copy would let an include find a file the project lacks, a probe compile first checks that MetaEditor never opens it (e.g. an inactive `#ifdef`). Otherwise it prints "not compiled" and why.
@@ -17,7 +19,11 @@
   - GPT cites the topic it checked. Without the reference, GPT marks API facts "unverified against the MQL5 docs", and the run's output and log say why.
   - Turn it off with `"mql5Docs": false` in config.json. MQL5 runs then still mark API facts unverified.
   - A follow-up round keeps the previous round's docs setting.
-- **Close out:** `mark-reviewed --by claude-final|claude-fallback|user-declined --files "<exact files>" --note "<why>"`. Always pass `--files`; without it, every pending file and open finding in the project is cleared.
+- **Close out** (always for the files named in `--files`, which is required):
+  - `mark-reviewed --chain <log> --files ".." --note "<evidence for each finding | superseded by <log>>"` closes one review chain: its findings go from those files, nothing else changes (pending edits stay pending, other chains stay open). The note is appended to the chain's log.
+  - `mark-reviewed --by claude-final --release "<backup>/.claude/RELEASE.txt" --files ".." --note ".."` acknowledges copies of released files (e.g. the repo mirror): each must match the release byte for byte, or be absent where the release has no such file.
+  - `--by claude-fallback` (after a fallback review) and `--by user-declined` (the user's word) acknowledge the current content.
+  - No `--by` mode removes open findings; an unknown or missing `--by` is refused.
 - **Decisions:** `note [<log.md>] --text ".." | --file <f>`. Without a log, the note goes to the project's latest GPT log.
 - **On/off switch:** `off` / `on` affects this project; `off --all` / `on --all` affects every project and resets their own switches. It lasts until switched again (kept in state, no settings file).
   - While off: no change tracking, reviews, plan or idea checks; Claude may control the screen itself (the one-operator desktop lock still applies). Session start and the next prompt tell Claude.
@@ -70,8 +76,13 @@
 - **Not tracked** (listed by `status`): copies of existing content, moves (same extension), and files a branch switch changed in a nested repo (only clean → clean, HEAD moved, no commit/reset in the command). Config files copied or moved, and files that already have a pending change, are always tracked.
 - **Setup files edited by another session** (Edit/Write) while this session's shell command runs are left to that session.
 - **Cross-project receipts:** a review or `mark-reviewed` also acknowledges pending records of the same files in other projects, but only when their content is exactly what was acknowledged and no findings are open.
-- **After changing the setup itself:** `node ~/.claude/gpt/tests/run.js` runs the regression checks (no GPT calls);
-  `node ~/.claude/gpt/tests/release.js` checks syntax and config, runs them, then copies the setup to the backup folder (`--backup <dir>` or `GPT_BACKUP_DIR`) with a `RELEASE.txt` manifest.
+- **After changing the setup itself:**
+  - `node ~/.claude/gpt/tests/run.js [--strict] [--exact] [name ...]` runs the regression checks (no GPT calls). A name equal to a script name selects exactly that script, other names select every script containing them, and no name means all.
+    - Every run tests a frozen copy of the setup and of the backup folder (`tests/setup-files.js` capture: the copy agrees with the source as inventoried before and after copying, retried 3 times), and prints `tested: setup sha256 …, backup sha256 …`. Editing during a run doesn't change its result.
+  - `node ~/.claude/gpt/tests/release.js` checks syntax and config, runs the strict suite, then copies the setup to the backup folder (`--backup <dir>` or `GPT_BACKUP_DIR`) with a `RELEASE.txt` manifest (it records the tested hashes).
+    - It refuses, before and after the checks, while any project's state still knows a released (or deleted) file as unreviewed, or a state file can't be read. That is a backstop, not proof.
+    - It also refuses if the live setup changed during the release ("release again"). `--allow-unreviewed` is the user's override only.
+  - `node ~/.claude/gpt/tests/prove.js <script> --expect "<FAIL text>" [--old <.claude dir>]` proves a regression check for a production-code fix: it must fail on the old version (default: the last release) on that assertion, without a crash or skip, and pass on the live one. Both get the same checks, tools and backup copy. Fixes to the test tools are covered by their own fixture checks (t_r31).
 
 ## Configuration
 - **Per-project overrides** go in `<project>/.claude/gpt.json`, e.g. `{"review": false, "plans": true, "ideas": true, "computerUse": "gpt", "effort": "auto", "ignore": ["evidence/**", "app/server.mjs"]}`.

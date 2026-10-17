@@ -700,25 +700,37 @@ const handlers = {
         // The turn ends here: its discovery window closes, so edits the user makes before the next prompt
         // are never attributed to it (the prompt hook only absorbs turns that ended without a Stop).
         s.turnClosedAt = Date.now();
-        return warn ? { warn } : null;
+        // Open findings after this turn's block: the user is told once what is still open — every file with
+        // open findings, also ones with newer edits or a running review — and again only when that set changes
+        // (like the pending note above), so a turn never ends silently on them and the note never repeats.
+        const stillOpen = Object.entries(s.changes).filter(([, c]) => [].concat(c.openFindings || []).length);
+        const openSig = `${turn}|${stillOpen.map(([f, c]) => `${f.toLowerCase()}=${[].concat(c.openFindings).sort().join(',')}`).sort().join('|')}`;
+        let notice = null;
+        if (stillOpen.length && s.openNoteSig !== openSig) { s.openNoteSig = openSig; notice = stillOpen.map(([f, c]) => [f, [].concat(c.openFindings), coveredByRunning([f, c])]); }
+        return warn || notice ? { warn, notice } : null;
       }
       return { findings, list: pendingList, unavailable: L.minutesAgo(s.gptUnavailableAt, cfg.unavailableCooldownMinutes), why: s.gptUnavailableReason };
     });
     if (!res) return out();
-    if (res.warn) return out({ systemMessage: `GPT review still pending for ${res.warn} changed file(s) in ${path.basename(root)}.` });
+    if (res.warn || res.notice) {
+      const open = (res.notice || []).map(([f, logs, running]) => `${f} (${logs.join(', ')}${running ? '; a review of it is running' : ''})`);
+      return out({ systemMessage: [res.warn ? `GPT review still pending for ${res.warn} changed file(s) in ${path.basename(root)}.` : '',
+        open.length ? `GPT findings still open in ${path.basename(root)} — the work isn't finished: ${open.join(', ')}.` : ''].filter(Boolean).join(' ') });
+    }
     const P = `--project "${root}"`;
     const parts = [];
     if (res.findings) {
       const logs = [...new Set(res.findings.flatMap(([, c]) => [].concat(c.openFindings)))];
       const files = res.findings.map(([f]) => f);
-      parts.push(`Open GPT findings (${logs.join(', ')}) on: ${files.join(', ')}. Fix + follow-up review, or accept: ${GPT} mark-reviewed ${P} --by claude-final --files "${files.join(',')}" --note "<why>".`);
+      parts.push(`Open GPT findings (${logs.join(', ')}) on: ${files.join(', ')}. Fix each one and run the follow-up: ${GPT} review ${P} --followup <log> --file <response.md>. ` +
+        `A finding that isn't real: dispute it with evidence in that response. If GPT still maintains it after the last round, or a later review that resolved it superseded this one, close only that chain: ${GPT} mark-reviewed ${P} --chain <log> --files "${files.join(',')}" --note "<evidence for each finding | superseded by <log>>".`);
     }
     if (res.list) {
       const files = res.list.map(([f, c]) => `  - ${f} (${c.deleted ? 'DELETED' : `~${c.lines} lines`}${c.sensitive ? ', SENSITIVE' : ''})`).join('\n');
       const how = res.unavailable
-        ? `GPT failed recently (${String(res.why || 'unknown').slice(0, 120)}). Try once: ${GPT} review ${P} --task "<goal>"; if it fails again use the fallback-reviewer agent, then mark-reviewed --by claude-fallback --files "..." and tell the user.`
+        ? `GPT failed recently (${String(res.why || 'unknown').slice(0, 120)}). Try once: ${GPT} review ${P} --task "<goal>"; if it fails again use the fallback-reviewer agent — fix or reject (with evidence) each of its findings — then mark-reviewed ${P} --by claude-fallback --files "..." --note "<the fallback review>" and tell the user.`
         : `Run (background): ${GPT} review ${P} --task "<goal + user requirements>".`;
-      parts.push(`GPT review needed — unreviewed changes:\n${files}\n${how}\nFinal-round fixes: mark-reviewed ${P} --by claude-final --files "..." --note "...". User declined: --by user-declined.`);
+      parts.push(`GPT review needed — unreviewed changes:\n${files}\n${how}\nCopies of released files (e.g. a repo mirror): mark-reviewed ${P} --by claude-final --release "<backup>/.claude/RELEASE.txt" --files "..." --note "...". The user declined a review (their own words): --by user-declined --files "...".`);
     }
     return out({ decision: 'block', reason: parts.join('\n\n') + '\nPausing mid-task or waiting on the user? Say so in one line and stop.' });
   },

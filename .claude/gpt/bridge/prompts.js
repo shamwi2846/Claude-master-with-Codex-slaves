@@ -17,6 +17,58 @@ const ROLE = 'You are working alongside another AI, Claude, which is the ONLY au
 
 const FINDING_FORMAT = `### [CRITICAL|HIGH|MEDIUM|LOW] <title>\n- Location: file:line\n- Failure: concrete input/state -> wrong result (one sentence)\n- Fix: <one sentence or a minimal snippet>\n- Test (CRITICAL/HIGH only): <input/state> -> <expected result>  (a regression test Claude should add)\n`;
 
+// Every code review (initial, follow-up, score with files, the fallback reviewer) ends with one COVERAGE line:
+// which areas it actually checked. codex.js refuses an answer without a valid one (coverageDefect).
+const COVERAGE_FIELDS = ['inputs/encodings', 'failure/timeout/cleanup', 'concurrency/stale state', 'callers/interfaces', 'tests'];
+const COVERAGE_VALUES = ['checked', 'n/a', 'not examined'];
+const COVERAGE_LINE = `COVERAGE: ${COVERAGE_FIELDS.map(f => `${f}=<${COVERAGE_VALUES.join('|')}>`).join('; ')}`;
+const COVERAGE_RULE = `Last line, exactly once: ${COVERAGE_LINE}\n(what you actually examined: "not examined" is an honest answer; "n/a" only when the area can't apply to this change)\n`;
+// What is wrong with an answer's COVERAGE line, or null when it is valid: exactly one, the last non-empty line,
+// exactly the five fields once each (field=value, separated by ";"), each with an allowed value.
+function coverageDefect(text) {
+  const all = String(text || '').split('\n'), isCov = l => /^[\s*`>#_-]*COVERAGE[\s*`_]*:/i.test(l);
+  const lines = all.filter(isCov);
+  if (lines.length !== 1) return lines.length ? 'more than one COVERAGE line' : 'the COVERAGE line is missing';
+  if (!isCov([...all].reverse().find(l => l.trim()) || '')) return 'the COVERAGE line is not the last line';
+  const segs = lines[0].replace(/^[\s*`>#_-]*COVERAGE[\s*`_]*:/i, '').replace(/[*`]/g, '').split(';').map(p => p.trim()).filter(Boolean);
+  const seen = new Map();
+  for (const seg of segs) {
+    const m = seg.match(/^([^=]+)=(.*)$/);
+    if (!m) return `COVERAGE part "${seg}" is not field=value`;
+    const f = m[1].trim().toLowerCase(), v = m[2].trim().toLowerCase();
+    if (!COVERAGE_FIELDS.includes(f)) return `COVERAGE field "${f}" is not one of ${COVERAGE_FIELDS.join(', ')}`;
+    if (seen.has(f)) return `COVERAGE field "${f}" appears twice`;
+    if (!COVERAGE_VALUES.includes(v)) return `COVERAGE value "${v}" for "${f}" is not allowed (use ${COVERAGE_VALUES.join(', ')})`;
+    seen.set(f, v);
+  }
+  const absent = COVERAGE_FIELDS.find(f => !seen.has(f));
+  return absent ? `COVERAGE field "${absent}" is missing` : null;
+}
+
+// The ONE parser of GPT's answer structure, used by every reader (codex.js checks, findingFiles, scoring, stats).
+// A line is read with Markdown decoration (* _ ` ~) taken as blanks, so no decoration can hide anything:
+// 'finding' = a finding heading at any level ("### [HIGH] title", "## **[HIGH]**", "# `[LOW]`"); 'open' = a follow-up
+// item still open ("1. MAINTAIN", "1) OPEN", "(1) __OPEN__", "- 1. _MAINTAIN_"); 'item' = a closed one (CONCEDE /
+// RESOLVED); null = anything else. The answer text itself is never rewritten.
+// (a line without decoration (* _ ` ~ become blanks) and without leading blockquote markers "> > ")
+const bareLine = line => String(line).replace(/[*_`~]/g, ' ').replace(/^\s*(?:>\s*)+/, '');
+// (lineStatus: a follow-up item's status word, CONCEDE / RESOLVED / MAINTAIN / OPEN, or null)
+function lineStatus(line) {
+  const m = bareLine(line).match(/^\s*[-+]?\s*\(?\s*\d+\s*[.):]\s*(CONCEDE|RESOLVED|MAINTAIN|OPEN)\b/i);
+  return m ? m[1].toUpperCase() : null;
+}
+function lineKind(line) {
+  if (/^\s*#+\s*\[\s*(CRITICAL|HIGH|MEDIUM|LOW)\s*\]/i.test(bareLine(line))) return 'finding';
+  const st = lineStatus(line);
+  return st ? (st === 'MAINTAIN' || st === 'OPEN' ? 'open' : 'item') : null;
+}
+// How a follow-up settled earlier findings, for `gpt.js stats`: "<CONCEDE>/<RESOLVED>/<MAINTAIN>/<OPEN>" counts.
+const settlement = text => ['CONCEDE', 'RESOLVED', 'MAINTAIN', 'OPEN'].map(s => String(text || '').split('\n').filter(l => lineStatus(l) === s).length).join('/');
+const lineKinds = text => String(text || '').split('\n').map(lineKind);
+const hasFinding = text => lineKinds(text).includes('finding');
+const hasOpenItem = text => lineKinds(text).includes('open');
+const findingCount = text => lineKinds(text).filter(k => k === 'finding').length;
+
 function lessonsBlock() {
   const l = L.readLessons(C.root);
   return l.length ? `\nPROJECT LESSONS (confirmed past mistakes in this project — check the change does not repeat them):\n${l.join('\n')}\n` : '';
@@ -48,4 +100,4 @@ function docsBlock(d) {
     `If the reference can't support a claim, write "unverified against the MQL5 docs" instead of asserting it. A passage verified earlier in this session can be reused.\n`;
 }
 
-module.exports = { READONLY_NOTE, EFFORT_RULES, ROLE, FINDING_FORMAT, lessonsBlock, mql5Block, docsBlock };
+module.exports = { READONLY_NOTE, EFFORT_RULES, ROLE, FINDING_FORMAT, COVERAGE_FIELDS, COVERAGE_VALUES, COVERAGE_LINE, COVERAGE_RULE, coverageDefect, lineKind, lineStatus, hasFinding, hasOpenItem, findingCount, settlement, lessonsBlock, mql5Block, docsBlock };
