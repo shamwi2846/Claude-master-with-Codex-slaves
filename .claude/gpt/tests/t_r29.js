@@ -92,6 +92,17 @@ rr = gpt(P, 'on', '--all');
 fs.rmSync(lock, { recursive: true, force: true });
 ok(/WARNING: .*gpt-r29-b kept its own switch/.test(rr.stdout), '--all reports a project whose switch it could not reset');
 gpt(Q, 'on'); gpt(P, 'on', '--all');
+// a switch that can't be saved changes nothing and says so
+const lockH = L.statePath(L.HOME) + '.lock'; fs.mkdirSync(lockH, { recursive: true });
+gpt(P, 'on'); // P has its own switch: a failed --all must not reset it
+rr = gpt(Q, 'off', '--all');
+fs.rmSync(lockH, { recursive: true, force: true });
+ok(rr.status === 2 && /global switch could not be saved/.test(rr.stderr) && (L.readState(L.HOME).setupSwitchAll || {}).state !== 'off' && !!L.readState(P).setupSwitch, 'off --all with the global state busy: refused, project switches untouched');
+const lockQ = L.statePath(Q) + '.lock'; fs.mkdirSync(lockQ, { recursive: true });
+rr = gpt(Q, 'off');
+fs.rmSync(lockQ, { recursive: true, force: true });
+ok(rr.status === 2 && /could not be saved/.test(rr.stderr) && !L.setupSwitch(Q).off, "a project switch that can't be saved is refused");
+gpt(P, 'on', '--all');
 // a project that kept its own ON switch through a busy "off --all" stays on, and its history agrees
 gpt(P, 'on'); const lockP = L.statePath(P) + '.lock'; fs.mkdirSync(lockP, { recursive: true });
 gpt(Q, 'off', '--all'); fs.rmSync(lockP, { recursive: true, force: true });

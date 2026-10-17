@@ -378,7 +378,9 @@ const commands = {
 function setSwitch(state) {
   const at = Date.now(), back = `gpt.js ${state === 'off' ? 'on' : 'off'}${C.opts.all ? ' --all' : ''}`;
   if (C.opts.all) {
-    L.updateState(L.HOME, g => { g.setupSwitchAll = { state, at }; g.setupSwitchAllLog = (g.setupSwitchAllLog || []).concat({ state, at }).slice(-50); });
+    // (strict: if the global switch can't be saved, nothing else changes)
+    const saved = L.updateState(L.HOME, g => { g.setupSwitchAll = { state, at }; g.setupSwitchAllLog = (g.setupSwitchAllLog || []).concat({ state, at }).slice(-50); }, true);
+    if (saved && saved.lockFailed) C.die(`Not switched: the setup's state was busy, so the global switch could not be saved and nothing was changed. Run gpt.js ${state} --all again.`);
     let reset = 0;
     // A reset is logged in the project's own history at the moment it happens (a failed one isn't), so the
     // history always matches what the project's switch really was.
@@ -394,7 +396,8 @@ function setSwitch(state) {
     if (L.readState(L.HOME).setupSwitch) resetOwn(L.HOME); // (a session in the setup's own folder)
     console.log(`Claude + GPT setup ${state.toUpperCase()} for all projects until \`${back}\`${reset ? ` (${reset} project switch(es) reset)` : ''}.`);
   } else {
-    L.updateState(C.root, s => { s.setupSwitch = { state, at }; s.setupSwitchLog = (s.setupSwitchLog || []).concat({ state, at }).slice(-50); });
+    const saved = L.updateState(C.root, s => { s.setupSwitch = { state, at }; s.setupSwitchLog = (s.setupSwitchLog || []).concat({ state, at }).slice(-50); }, true);
+    if (saved && saved.lockFailed) C.die(`Not switched: this project's state was busy, so the switch could not be saved. Run gpt.js ${state} again.`);
     console.log(`Claude + GPT setup ${state.toUpperCase()} for ${C.root} until \`${back}\`.`);
   }
   if (state === 'off') console.log('While off: no change tracking, GPT reviews, plan or idea checks, and Claude may control the screen itself. Changes made before stay pending for when it is back on.');
