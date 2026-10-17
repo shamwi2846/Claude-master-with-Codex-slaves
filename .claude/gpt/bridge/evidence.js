@@ -98,13 +98,26 @@ function runTracked(cmd, timeoutMs) {
   });
 }
 
-async function evidence() {
+// The files under review (`frozen`: [{ abs, snap }] from reviewMaterial — snap = the frozen copy GPT reads, null =
+// deleted) whose live version differs from what GPT reviews.
+function differsFromReviewed(frozen) {
+  const same = (a, b) => { try { return fs.readFileSync(a).equals(fs.readFileSync(b)); } catch { return false; } };
+  return (frozen || []).filter(({ abs, snap }) => (snap ? !fs.existsSync(abs) || !same(abs, snap) : fs.existsSync(abs))).map(({ abs }) => abs);
+}
+
+// `frozen`: the review's frozen files, so every piece of evidence says how it relates to the reviewed version.
+// Evidence commands run on the live project, not the frozen copy: the reviewed files are compared before and
+// after them ("matched" says nothing about the time in between). An evidence file Claude captured carries no
+// record of what it tested: it is marked unverified, plus the reviewed files that changed after it was written.
+async function evidence(frozen = null) {
   const { opts, cfg } = C;
   // During a usage-limit cooldown the GPT call will be refused anyway: don't run builds/tests for nothing.
   if ((L.readState(L.HOME).limitUntil || 0) > Date.now() && !opts['force-gpt']) return '';
   let out = '';
-  const summary = [];
-  for (const c of String(opts.evidence || '').split(';;').map(s => s.trim()).filter(Boolean)) {
+  const summary = [], labels = [];
+  const cmds = String(opts.evidence || '').split(';;').map(s => s.trim()).filter(Boolean);
+  const before = frozen && cmds.length ? differsFromReviewed(frozen) : [];
+  for (const c of cmds) {
     const t = Date.now();
     const r = await runTracked(c, (cfg.evidenceTimeoutMinutes || 10) * 60000);
     const lines = r.out.split(/\r?\n/);
@@ -113,13 +126,22 @@ async function evidence() {
     summary.push(`${c} -> ${status}${r.contained ? '' : ` (${UNCONTAINED_NOTE})`}`);
     out += `$ ${c}\n(${status}, ${Math.round((Date.now() - t) / 1000)}s${lines.length > (cfg.evidenceTailLines || 120) ? `, last ${cfg.evidenceTailLines || 120} lines` : ''}${r.contained ? '' : `; ${UNCONTAINED_NOTE}`})\n${tail}\n\n`;
   }
+  if (cmds.length && frozen) {
+    const changed = [...new Set(before.concat(differsFromReviewed(frozen)))];
+    labels.push(changed.length
+      ? `The commands ran on the live project, which DIFFERED from the reviewed version (${changed.join(', ')}): this output may not match the code you review.`
+      : 'The commands ran on the live project, which matched the reviewed version before and after them (not verified in between).');
+  }
   if (opts['evidence-file']) {
     const lines = C.readArgFile(opts['evidence-file']).split(/\r?\n/);
+    let at = 0; try { at = fs.statSync(path.resolve(opts['evidence-file'])).mtimeMs; } catch {}
+    const newer = (frozen || []).filter(({ abs }) => { try { return fs.statSync(abs).mtimeMs > at; } catch { return false; } }).map(({ abs }) => abs);
     out += `(captured output: ${opts['evidence-file']})\n${lines.slice(-(cfg.evidenceTailLines || 120)).join('\n')}\n`;
     summary.push(`file ${opts['evidence-file']}`);
+    labels.push(`The captured output was supplied by Claude: what it tested is unverified${newer.length ? `, and these reviewed files changed after it was written: ${newer.join(', ')}` : ''}.`);
   }
-  if (summary.length) console.log(`[gpt.js] evidence: ${summary.join(' | ')}`);
-  return out ? `\nEVIDENCE (build/test/compile output — treat failures as facts, check whether the change caused them):\n\`\`\`\n${out.trim()}\n\`\`\`\n` : '';
+  if (summary.length) console.log(`[gpt.js] evidence: ${summary.join(' | ')}${labels.length ? `\n[gpt.js] ${labels.join('\n[gpt.js] ')}` : ''}`);
+  return out ? `\nEVIDENCE (build/test/compile output — treat failures as facts, check whether the change caused them; weigh it by how it relates to the reviewed version):\n${labels.map(l => `- ${l}\n`).join('')}\`\`\`\n${out.trim()}\n\`\`\`\n` : '';
 }
 
 // MetaEditor's own MQL5|MQL4 folder (for `file`'s language): <library> includes the folder a source is in

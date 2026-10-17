@@ -91,7 +91,7 @@ mr('gpt', Date.now(), [F], [], { verdict: 'RESOLVED', log: path.join(P, 'r3.md')
 const of = [].concat(L.readState(P).changes[F].openFindings || []);
 ok(!of.includes(X) && of.includes(path.join(P, 'other.md')), "follow-up clears its own chain's findings, keeps another review's");
 mr('claude-final', Date.now(), [F], []);
-ok(!L.readState(P).changes[F].openFindings, 'mark-reviewed clears all open findings');
+ok([].concat(L.readState(P).changes[F].openFindings || []).includes(path.join(P, 'other.md')), 'a manual acknowledgement keeps open findings (only a follow-up or closing that chain removes them)');
 
 // 11. a failed revision leaves the reviewed staged version untouched
 const SD = path.join(P, 'stage'); fs.mkdirSync(path.join(SD, 'work'), { recursive: true }); fs.writeFileSync(path.join(SD, 'work', 'doc.md'), 'reviewed\n');

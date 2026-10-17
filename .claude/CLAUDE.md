@@ -40,24 +40,39 @@
 1. **Review early, in the background,** once a coherent piece of work is done, and avoid editing the files under review. GPT gets frozen copies and an exact diff. Use `--full` for a whole-file audit.
 2. **Evidence once.** Attach existing build or test output (`--evidence-file`), or let gpt.js run it once (`--evidence`; for MQL5 use `mql5-compile`). Reuse it while the code it covers is unchanged. Skip evidence for trivial changes.
 3. **Round 1 is blind to your reasoning, not to the requirements.** `--task` states the user's requirements, constraints and acceptance criteria. Leave out your rationale.
-4. **Verify every finding yourself.** Fix the real ones and note why you reject the others. For confirmed CRITICAL/HIGH findings, add GPT's suggested regression test.
+4. **Verify every finding yourself.** Every confirmed finding, of any severity, is either fixed and re-reviewed, or rejected with evidence that its exact trigger can't happen. **Claude's decision on whether a finding is real is final.** For confirmed CRITICAL/HIGH findings, add GPT's suggested regression test and prove it (see Testing).
 5. **Follow-ups.**
-   - Run `review --followup <log> --file <response.md>`, covering only the findings you fixed or dispute. There are at most 3 rounds.
-   - After round 2, if only LOW findings remain, finish.
-   - MEDIUM or higher findings need an explicit decision. **Claude's decision is final.**
-   - Rejecting a maintained HIGH/CRITICAL finding needs evidence that GPT's exact trigger can't happen. A real defect you'd leave is a risk the user must accept.
+   - Run `review --followup <log> --file <response.md>`, covering the findings you fixed or dispute. There are at most 3 rounds.
+   - **At the cap,** fixes made since the last round still need a review: run a fresh `review` of the fixed files whose `--task` quotes every still-open finding and its trigger. When it resolves them, close the old chain (step 7).
+   - A confirmed finding still open is unfinished work: tell the user what remains. A real defect you'd leave is a risk the user must accept.
+   - **Repeated findings:** when one mechanism draws new findings in 2 rounds in a row, stop patching it. Recheck its assumptions, then simplify or redesign it, and check the replacement against the original acceptance criteria (removing a feature can just hide the defect).
 6. **Don't run dependent steps early.** Installs, releases, migrations and trade setup wait for a pending plan, idea or review result. Independent work is fine meanwhile.
-7. **Close out every review.** Open findings block Stop once per turn until a follow-up resolves them or you run `gpt.js mark-reviewed --by claude-final --files "<files>" --note "<decision>"`.
+7. **Close out every review.** Open findings block Stop once per turn; later Stops in that turn tell the user what's still open. Only two things remove open findings:
+   - a GPT follow-up of their chain;
+   - `gpt.js mark-reviewed --chain <log> --files "<files>" --note "<evidence for each finding | superseded by <log>>"`: a rejected chain, or one a later resolved review superseded. It closes only that chain on those files.
+
+   `--by claude-final --release "<backup>/.claude/RELEASE.txt" --files ...` only acknowledges copies of released files (the repo mirror; each is checked against the release). `--by user-declined` only on the user's word. None of them clears findings.
 8. **Record and report.**
    - Record decisions with `gpt.js note`.
    - Record recurring confirmed mistakes with `gpt.js lesson --text "<one line>"`.
    - Tell the user briefly what GPT found and what you changed or rejected.
 
+## Testing and facts
+- **Facts first.** When an external tool's behaviour matters and is uncertain (MetaEditor, git, the tester, ...), check its docs and run small isolated experiments before designing. Record the facts with `gpt.js note`. Use `gpt.js testplan` for risky logic and interfaces before coding.
+- **This setup (`~/.claude/gpt`):**
+  - while iterating, run only the affected checks: `node ~/.claude/gpt/tests/run.js <name> [<name> ...]` (exact script names);
+  - the final full strict run is `release.js`, on a frozen candidate; any change after it means release again;
+  - runs test frozen copies, so editing during a run is safe;
+  - prove a CRITICAL/HIGH regression check with `tests/prove.js <script> --expect "<FAIL text>"` before releasing.
+- **Other projects:** their own tests, in full before calling work done. A CRITICAL/HIGH regression test must fail on the old code and pass on the new.
+- **Pull requests:** push complete, reviewed batches. A PR is done only when its final head commit has green CI and every CodeRabbit finding on it is dispositioned (fixed and replied to, or rejected with a reply). A new push restarts that.
+
 ## If GPT is unavailable
 The output starts with `GPT_UNAVAILABLE` after one retry. Then:
 1. Spawn the `fallback-reviewer` agent, passing it the failed review's task, files, focus and mode.
-2. Run `gpt.js mark-reviewed --by claude-fallback --files "<exactly those files>" --note "<reason>"`.
-3. Tell the user.
+2. Handle its findings like GPT's: fix and re-review with the fallback, or reject with evidence. Check its COVERAGE line.
+3. With no confirmed finding left and no edit since that review, run `gpt.js mark-reviewed --by claude-fallback --files "<exactly those files>" --note "<the fallback review>"`.
+4. Tell the user.
 
 Never block the user's work.
 

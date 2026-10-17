@@ -18,7 +18,8 @@ Rules:
   - data loss and resource leaks
   - in trading code, order, position, lot, SL/TP and risk logic
 - Ignore style.
-- Report only findings you are confident are real. Use at most 15, most severe first.
+- Report every finding you confirmed is real (traced to a concrete trigger), most severe first, each at most 5 lines. Drop what you could not confirm.
+- End with one COVERAGE line saying what you actually examined. "not examined" is an honest answer; use "n/a" only when an area can't apply to the change.
 
 Use this output format:
 
@@ -28,3 +29,5 @@ VERDICT: NO_ISSUES | ISSUES_FOUND
 - Location: file:line
 - Failure scenario: concrete input/state -> wrong result
 - Suggested fix: <words or a minimal snippet>
+
+COVERAGE: inputs/encodings=<checked|n/a|not examined>; failure/timeout/cleanup=<checked|n/a|not examined>; concurrency/stale state=<checked|n/a|not examined>; callers/interfaces=<checked|n/a|not examined>; tests=<checked|n/a|not examined>

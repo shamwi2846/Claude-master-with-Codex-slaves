@@ -113,7 +113,8 @@ const STUB = put(path.join(W, 'codex-rec.js'),
   `  fs.appendFileSync(${JSON.stringify(REC)}, JSON.stringify({ a, input }) + '\\n');\n` +
   `  const mode = process.env.STUB_MODE || '', resume = a[1] === 'resume';\n` +
   `  if (mode === 'failfirst' && n === 0) { process.stderr.write('error: stream disconnected\\n'); process.exit(1); }\n` +
-  `  const text = mode === 'badfirst' && n === 0 ? 'I looked around.' : resume ? 'VERDICT: RESOLVED\\n1. RESOLVED — ok' : 'VERDICT: NO_ISSUES';\n` +
+  `  const cov = '\\nCOVERAGE: inputs/encodings=checked; failure/timeout/cleanup=checked; concurrency/stale state=n/a; callers/interfaces=checked; tests=not examined';\n` +
+  `  const text = mode === 'badfirst' && n === 0 ? 'I looked around.' : (resume ? 'VERDICT: RESOLVED\\n1. RESOLVED — ok' : 'VERDICT: NO_ISSUES') + cov;\n` +
   `  fs.writeFileSync(a[a.indexOf('-o') + 1], text); console.log('session id: 11111111-2222-3333-4444-555555555555'); });\n`);
 const cf = path.join(L.HOME, 'config.json'), orig = fs.readFileSync(cf, 'utf8');
 fs.writeFileSync(cf, JSON.stringify({ ...JSON.parse(orig), codexJs: STUB }));

@@ -5,6 +5,7 @@ const os = require('os');
 const { spawn, spawnSync } = require('child_process');
 const L = require('../lib');
 const C = require('./ctx');
+const P = require('./prompts');
 
 // Codex's sandbox only covers shell commands, not MCP tools. So every mode except computer use runs
 // with the user's Codex config ignored (no MCP servers/plugins at all: no MetaEditor write tools, no
@@ -171,15 +172,29 @@ const VERDICTS = {
 };
 // The answer's FIRST non-empty line must be "VERDICT: <allowed value>"; anything else (no verdict,
 // "VERDICT: BLOCKED", a verdict quoted mid-text) means the review was not actually performed.
-function checkVerdict(r, kind) {
+// A review verdict must also agree with its own items (NO_ISSUES/RESOLVED next to listed findings or MAINTAIN/OPEN
+// items would clear findings that are still open), and with `requireCoverage` (code reviews) the answer needs a
+// valid COVERAGE line. Such a defect is repaired once (`badFormat` names it), else the review counts as not done.
+function checkVerdict(r, kind, requireCoverage) {
   if (!r.ok || !VERDICTS[kind]) return r;
   // Strip markdown decoration (**, `, #, >) but keep underscores: they are part of values like NO_ISSUES.
   // Exactly one VERDICT line in the whole answer, and it must be the (unquoted) first line.
   const verdictLines = r.text.split('\n').filter(l => /^[\s*#>`_]*VERDICT[\s*`_]*:/i.test(l)).length;
   const first = (r.text.split('\n').find(l => l.trim()) || '').replace(/[*`#]/g, '').trim();
   const m = first.match(/^VERDICT\s*:\s*([A-Z0-9_]+)\s*$/i);
-  if (m && verdictLines === 1 && VERDICTS[kind].includes(m[1].toUpperCase())) return { ...r, verdict: m[1].toUpperCase() };
-  return { ...r, ok: false, badVerdict: true, reason: 'GPT gave no valid VERDICT (review not actually performed): ' + r.text.slice(0, 200).replace(/\s+/g, ' ') };
+  if (!(m && verdictLines === 1 && VERDICTS[kind].includes(m[1].toUpperCase()))) {
+    return { ...r, ok: false, badVerdict: true, reason: 'GPT gave no valid VERDICT (review not actually performed): ' + r.text.slice(0, 200).replace(/\s+/g, ' ') };
+  }
+  const verdict = m[1].toUpperCase();
+  const bad = defect => ({ ...r, ok: false, badVerdict: true, badFormat: defect, reason: `GPT's answer is malformed: ${defect}` });
+  // (P.lineKind is the one structure parser: the same that findingFiles, scoring and stats use)
+  const clean = (kind === 'review' && (verdict === 'NO_ISSUES' || verdict === 'RESOLVED')) || (kind === 'score' && requireCoverage && verdict === 'ALL_10');
+  if (clean) {
+    if (P.hasFinding(r.text)) return bad(`the verdict ${verdict} contradicts the findings the answer lists`);
+    if (P.hasOpenItem(r.text)) return bad(`the verdict ${verdict} contradicts the MAINTAIN/OPEN items the answer lists`);
+  }
+  if (requireCoverage) { const d = P.coverageDefect(r.text); if (d) return bad(d); }
+  return { ...r, verdict };
 }
 
 // One shared failure policy. Never retried: timeouts (the old process may still run), usage/rate limits
@@ -194,7 +209,8 @@ function retryable(r) {
 // `before` runs before each attempt (write mode uses it to give every attempt a fresh staged copy).
 // Computer use is never retried automatically: repeating UI actions (clicks, toggles) is unsafe.
 // `docs`: the MQL5 reference server for this run (docsFor(...).def), passed to every attempt and repair.
-async function ask({ mode, prompt, effort, sandbox, meta = '', cwd, before, resume, persist, noRetry, onSpawn, docs }) {
+// `requireCoverage`: a code review — its answer must carry a valid COVERAGE line (checkVerdict).
+async function ask({ mode, prompt, effort, sandbox, meta = '', cwd, before, resume, persist, noRetry, onSpawn, docs, requireCoverage }) {
   const started = Date.now();
   const kind = mode.replace(/-r\d+$/, '');
   const tokensOf = x => Number(((String(x.raw || '').match(/tokens used\s*\n\s*([\d,]+)/i) || [])[1] || '0').replace(/,/g, ''));
@@ -208,22 +224,26 @@ async function ask({ mode, prompt, effort, sandbox, meta = '', cwd, before, resu
     // never a made-up verdict (GPT must say NOT_COMPLETED if it did not actually finish the work).
     const repair = async x => {
       if (!(x.badVerdict && x.sessionId && (persist || resume))) return x; // only saved sessions can be resumed
-      const fix = await runCodex({ prompt: `Your previous answer did not start with the required verdict line. Do NOT explore, read files or run commands now. If you completed the work, restate your final answer exactly, with the first line "VERDICT: <one of ${VERDICTS[kind].join(' | ')}>". If you could not complete it, reply only: NOT_COMPLETED: <reason>.`, effort, sandbox, mode: kind, cwd, resume: x.sessionId, docs });
+      const cov = requireCoverage ? ` and, as its last line, exactly one ${P.COVERAGE_LINE}` : '';
+      const fix = await runCodex({ prompt: (x.badFormat
+        ? `Your previous answer has a format defect: ${x.badFormat}. Do NOT explore, read files or run commands now. If you completed the work, restate your final answer with that defect corrected — the first line "VERDICT: <one of ${VERDICTS[kind].join(' | ')}>" agreeing with the items you list${cov}.`
+        : `Your previous answer did not start with the required verdict line. Do NOT explore, read files or run commands now. If you completed the work, restate your final answer exactly, with the first line "VERDICT: <one of ${VERDICTS[kind].join(' | ')}>"${cov}.`) +
+        ' If you could not complete it, reply only: NOT_COMPLETED: <reason>.', effort, sandbox, mode: kind, cwd, resume: x.sessionId, docs });
       tokens += tokensOf(fix);
-      const fixed = checkVerdict(fix, kind);
+      const fixed = checkVerdict(fix, kind, requireCoverage);
       // A usage limit or login problem during the repair keeps its whole reason (the cooldown below matches it).
       const limit = !fix.ok && (LIMIT_ERR.test(fix.reason || '') || LOGIN_ERR.test(fix.reason || ''));
       return fixed.ok ? { ...fixed, sessionId: x.sessionId, raw: x.raw + '\n--- format repair ---\n' + fix.raw }
         : { ...x, reason: limit ? `review not completed: ${fix.reason}` : `review not completed (${String(fix.text || fix.reason || '').slice(0, 160)})`, raw: x.raw + '\n--- format repair ---\n' + fix.raw };
     };
     if (before) before();
-    r = checkVerdict(await runCodex({ prompt, effort, sandbox, mode: kind, cwd, resume, persist, onSpawn, docs }), kind);
+    r = checkVerdict(await runCodex({ prompt, effort, sandbox, mode: kind, cwd, resume, persist, onSpawn, docs }), kind, requireCoverage);
     tokens += tokensOf(r);
     r = await repair(r);
     if (retryable(r) && !noRetry && kind !== 'computer') {
       console.error(`[gpt.js] attempt 1 failed (${r.reason}); retrying once...`);
       if (before) before();
-      r = checkVerdict(await runCodex({ prompt, effort, sandbox, mode: kind, cwd, resume, persist, onSpawn, docs }), kind);
+      r = checkVerdict(await runCodex({ prompt, effort, sandbox, mode: kind, cwd, resume, persist, onSpawn, docs }), kind, requireCoverage);
       tokens += tokensOf(r);
       r = await repair(r); // the retry gets the same repair, still only one retry in total
     }
@@ -243,8 +263,8 @@ async function ask({ mode, prompt, effort, sandbox, meta = '', cwd, before, resu
   const verdict = (r.ok && r.verdict) || '-'; // normalised once by checkVerdict
   // Result quality: findings raised, and how follow-ups settled earlier ones (CONCEDE = a withdrawn false alarm).
   const text = r.ok ? String(r.text) : '';
-  const findings = (text.match(/^###\s*\[(CRITICAL|HIGH|MEDIUM|LOW)\]/gim) || []).length;
-  const settled = ['CONCEDE', 'RESOLVED', 'MAINTAIN', 'OPEN'].map(k => (text.match(new RegExp(`^\\s*\\d+\\.\\s*${k}\\b`, 'gim')) || []).length).join('/');
+  const findings = P.findingCount(text);
+  const settled = P.settlement(text);
   try { fs.appendFileSync(path.join(C.logDir(), 'index.tsv'), [new Date().toISOString(), mode, r.ok ? 'ok' : 'fail', verdict, secs, resume ? 'resume' : 'fresh', path.basename(log), tokens, findings, settled].join('\t') + '\n'); } catch {}
   return { ...r, log, secs, started, verdict, tokens };
 }
