@@ -17,6 +17,11 @@
   - A follow-up round keeps the previous round's docs setting.
 - **Close out:** `mark-reviewed --by claude-final|claude-fallback|user-declined --files "<exact files>" --note "<why>"`. Always pass `--files`; without it, every pending file and open finding in the project is cleared.
 - **Decisions:** `note [<log.md>] --text ".." | --file <f>`. Without a log, the note goes to the project's latest GPT log.
+- **On/off switch:** `off` / `on` affects this project; `off --all` / `on --all` affects every project and resets their own switches. It lasts until switched again (kept in state, no settings file).
+  - While off: no change tracking, reviews, plan or idea checks; Claude may control the screen itself (the one-operator desktop lock still applies). Session start and the next prompt tell Claude.
+  - Changes made before switching off stay pending for when it's back on. Changes from a discovery window or shell command that spans a switch are not counted.
+  - From a Claude session, `gpt.js off` works only when the user's current message asks to switch the setup off, e.g. "turn the GPT setup off" or "pause GPT". Otherwise it refuses with exit 2. From the user's own terminal it always works.
+  - `status --summary` shows the switch.
 - **Exit codes:**
   - `0` ok
   - `3` GPT_UNAVAILABLE (after one retry; usage limits start a 15-minute cooldown, override with `--force-gpt`)

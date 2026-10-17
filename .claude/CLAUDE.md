@@ -18,6 +18,7 @@
   - Only one `computer` agent runs at a time.
   - Stop launching agents during a usage-limit cooldown.
 - **Hook messages:** when one includes `--project "<dir>"`, keep that argument.
+- **On/off switch:** `gpt.js off [--all]` and `gpt.js on [--all]`, only when the user asks. While it's off, the hooks say so: don't consult GPT unless the user asks.
 
 ## When to consult GPT
 - **Finished code (hook-enforced):** run `gpt.js review --task "<goal + user requirements>"` before calling a coding task done. Add `--files` for deletions or for changes made outside Edit/Write.

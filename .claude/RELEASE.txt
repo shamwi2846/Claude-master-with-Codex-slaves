@@ -1,16 +1,16 @@
-Released 2026-10-16T21:53:12.169Z
+Released 2026-10-17T00:02:29.291Z
 Source: C:/Users/Shari/.claude
-Checks: OK: 315 passed, 0 failed, 0 skipped, 42 scripts, 192s
+Checks: OK: 354 passed, 0 failed, 0 skipped, 43 scripts, 246s
 
-711105ebb31ff7a9  .claude/CLAUDE.md
+e92205d67edbdec6  .claude/CLAUDE.md
 4548bdf3a97d6724  .claude/settings.json
 6313b76c34691c81  .claude/gpt/config.json
-fcfeeb31ba9e7af5  .claude/gpt/gpt.js
-dbac6be9292b03d7  .claude/gpt/gate.js
-8ff3937c2ced7865  .claude/gpt/lib.js
-d2bc19d8a8bfc5a0  .claude/gpt/REFERENCE.md
+1404114f1051c8ff  .claude/gpt/gpt.js
+14bac533029c9bff  .claude/gpt/gate.js
+b5490a7010ba9116  .claude/gpt/lib.js
+20643d0ee374404c  .claude/gpt/REFERENCE.md
 ac68ac9edfb7e1c2  .claude/gpt/bridge/codex.js
-d21708362b242581  .claude/gpt/bridge/commands.js
+5b5e0f77cd4cddfe  .claude/gpt/bridge/commands.js
 1fbfbfe10abbce2a  .claude/gpt/bridge/ctx.js
 a1df60cb4b793c96  .claude/gpt/bridge/evidence.js
 070bd62820db89bb  .claude/gpt/bridge/prompts.js
@@ -53,6 +53,7 @@ a243362efb29efcc  .claude/gpt/tests/t_r25.js
 24d46282c53dfbc7  .claude/gpt/tests/t_r26.js
 a12de5b0c976b8a2  .claude/gpt/tests/t_r27.js
 06703d4cd0538734  .claude/gpt/tests/t_r28.js
+006ef4d6e17faf5e  .claude/gpt/tests/t_r29.js
 157312e3571d2fb0  .claude/gpt/tests/t_r3.js
 7693baddca2c3554  .claude/gpt/tests/t_r4.js
 f3852b0f5c2a358b  .claude/gpt/tests/t_r5.js
