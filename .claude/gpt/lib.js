@@ -459,7 +459,8 @@ const REVIEWABLE_CONFIG = /((^|[\\/])(dockerfile|docker-compose[^\\/]*\.ya?ml|ma
 // <12 hex>.htm), or the tester's own markers in the first 4 KB (the tester writes UTF-16): MT5's generator
 // tag, MT4's "Strategy Tester:" title with its version and server tags. A deleted file: the version git
 // last had — HEAD's, or with `at` ({ top, revs }) the first of those revisions that has it (a deletion
-// committed in the turn: the commit, then the revision before it).
+// committed in the turn: the commit, then the revision before it). Older history is not searched: a path
+// can be reused, so an old report there says nothing about the file that was deleted (unknown = code).
 const TESTER_REPORT_NAME = /^(Report(Tester|Optimizer)-\d+\.html?|CodexSmokeReport-\d{8}T\d{6}Z-[0-9a-f]{12}\.htm)$/i;
 function isTesterReport(abs, at) {
   if (TESTER_REPORT_NAME.test(path.basename(abs))) return true;

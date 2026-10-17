@@ -64,6 +64,48 @@ wait(30); git('rm', '-rq', 'runs2', 'page2.html'); git('commit', '-qm', 'gone');
 gate('post-bash', { ...bG, tool_use_id: 'g2', tool_name: 'Bash', tool_input: { command: 'git rm -rq runs2 page2.html && git commit -m gone' } });
 gate('stop', bG);
 ok(!fs.existsSync(gr2) && !pendG(gr2) && pendG(gp2), 'a report deletion committed in the same turn is not a change to review; a page deletion is');
+// a report still pending from an earlier turn (seen before its content), committed complete, then deleted
+// and the deletion committed in the next turn: judged by the turn-start commit, which still had it
+gate('prompt', { ...bG, prompt: 'run the tester' });
+gate('pre-bash', { ...bG, tool_use_id: 'g3', tool_name: 'Bash', tool_input: { command: 'node smoke.js' } });
+wait(30); const gr3 = put(path.join(G, 'runs3', 'part.htm'), '');
+gate('post-bash', { ...bG, tool_use_id: 'g3', tool_name: 'Bash', tool_input: { command: 'node smoke.js' } });
+gate('stop', bG);
+const stillPending = pendG(gr3);
+fs.writeFileSync(gr3, utf16(REPORT)); git('add', '.'); git('commit', '-qm', 'report'); // (between turns)
+gate('prompt', { ...bG, prompt: 'remove the old run' });
+gate('pre-bash', { ...bG, tool_use_id: 'g4', tool_name: 'Bash', tool_input: { command: 'git rm -rq runs3 && git commit -m gone' } });
+wait(30); git('rm', '-rq', 'runs3'); git('commit', '-qm', 'gone');
+gate('post-bash', { ...bG, tool_use_id: 'g4', tool_name: 'Bash', tool_input: { command: 'git rm -rq runs3 && git commit -m gone' } });
+gate('stop', bG);
+ok(stillPending && !fs.existsSync(gr3) && pendG(gr3), 'a pending report whose deletion was committed in an earlier commit stays pending (shown for review: older history is never trusted)');
+// a path reused: hand-written HTML recreated where a committed report was deleted, edited, then deleted
+put(gr3, '<p>hand-written</p>\n'); // (between turns, untracked)
+gate('prompt', { ...bG, prompt: 'edit and drop the page' });
+gate('pre-bash', { ...bG, tool_use_id: 'g5', tool_name: 'Bash', tool_input: { command: 'node edit.js && rm runs3/part.htm' } });
+wait(30); fs.writeFileSync(gr3, '<p>hand-written, edited</p>\n'); fs.rmSync(path.join(G, 'runs3'), { recursive: true });
+gate('post-bash', { ...bG, tool_use_id: 'g5', tool_name: 'Bash', tool_input: { command: 'node edit.js && rm runs3/part.htm' } });
+gate('stop', bG);
+ok(pendG(gr3), "... and an old report in the history never clears a hand-written file deleted at the same path");
+// the same in a git repository nested in a non-git session folder
+const NP = path.join(W, 'nested'), NS = path.join(NP, 'sub'); fs.mkdirSync(NS, { recursive: true });
+const gitN = (...a) => spawnSync('git', ['-c', 'user.email=t@example.com', '-c', 'user.name=t', ...a], { cwd: NS, encoding: 'utf8' });
+put(path.join(NS, 'readme.txt'), 'x'); gitN('init', '-q'); gitN('add', '.'); gitN('commit', '-qm', 'init');
+const bN = { cwd: NP, session_id: 'r30n-' + Date.now() };
+gate('session', bN); gate('prompt', { ...bN, prompt: 'run the tester' });
+gate('pre-bash', { ...bN, tool_use_id: 'n1', tool_name: 'Bash', tool_input: { command: 'node smoke.js' } });
+wait(30); const nr = put(path.join(NS, 'runs', 'part.htm'), '');
+gate('post-bash', { ...bN, tool_use_id: 'n1', tool_name: 'Bash', tool_input: { command: 'node smoke.js' } });
+gate('stop', bN);
+const pendN = f => { const s = L.readState(NP), c = (s.changes || {})[f]; return !!c && c.at > L.reviewedAtFor(s, c); };
+const nStill = pendN(nr);
+fs.writeFileSync(nr, utf16(REPORT)); gitN('add', '.'); gitN('commit', '-qm', 'report');
+gate('prompt', { ...bN, prompt: 'remove the old run' });
+gate('pre-bash', { ...bN, tool_use_id: 'n2', tool_name: 'Bash', tool_input: { command: 'cd sub && git rm -rq runs && git commit -m gone' } });
+wait(30); gitN('rm', '-rq', 'runs'); gitN('commit', '-qm', 'gone');
+gate('post-bash', { ...bN, tool_use_id: 'n2', tool_name: 'Bash', tool_input: { command: 'cd sub && git rm -rq runs && git commit -m gone' } });
+gate('stop', bN);
+ok(nStill && !fs.existsSync(nr) && pendN(nr), '... the same in a repository nested in a non-git session folder (stays pending, no history search)');
 
 // 2. MetaEditor's own MQL5 folder: %APPDATA%\MetaQuotes\Terminal\<MD5 of the upper-cased install path, UTF-16LE>
 const ME_DIR = path.join(W, 'fake me'), APPDATA = path.join(W, 'appdata');

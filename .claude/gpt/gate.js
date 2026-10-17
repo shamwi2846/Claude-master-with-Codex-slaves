@@ -645,6 +645,8 @@ const handlers = {
     // Pending files first seen while still being written that turned out to be Strategy Tester reports
     // (output) — judged before the state lock (a deleted one may need a git lookup), so each is cleared only
     // if its record is still the version judged (not a newer change another session recorded meanwhile).
+    // (A deleted one: by HEAD's version; one whose deletion is already committed stays pending — shown for
+    // review, never cleared on the word of older history, see isTesterReport.)
     const reports = new Map(L.pending(L.readState(root)).filter(([f]) => /\.html?$/i.test(f) && L.isTesterReport(f)).map(([f, c]) => [f.toLowerCase(), c.at]));
     const res = L.updateState(root, s => {
       // Edits that were reverted (content equals the pre-edit baseline again) are no change at all.

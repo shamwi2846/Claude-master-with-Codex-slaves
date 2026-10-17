@@ -1,13 +1,13 @@
-Released 2026-10-17T12:39:04.669Z
+Released 2026-10-17T13:08:17.209Z
 Source: C:/Users/Shari/.claude
-Checks: OK: 395 passed, 0 failed, 0 skipped, 44 scripts, 267s
+Checks: OK: 398 passed, 0 failed, 0 skipped, 44 scripts, 289s
 
 e92205d67edbdec6  .claude/CLAUDE.md
 0949ab0f422cfbdb  .claude/settings.json
 6313b76c34691c81  .claude/gpt/config.json
 1404114f1051c8ff  .claude/gpt/gpt.js
-542066d447abdb41  .claude/gpt/gate.js
-1d630757a04d2dd1  .claude/gpt/lib.js
+13c9e39920375b22  .claude/gpt/gate.js
+867428861fa8259f  .claude/gpt/lib.js
 c7e831c61531b58a  .claude/gpt/REFERENCE.md
 ac68ac9edfb7e1c2  .claude/gpt/bridge/codex.js
 1de20f8e1a2c490d  .claude/gpt/bridge/commands.js
@@ -55,7 +55,7 @@ a12de5b0c976b8a2  .claude/gpt/tests/t_r27.js
 06703d4cd0538734  .claude/gpt/tests/t_r28.js
 006ef4d6e17faf5e  .claude/gpt/tests/t_r29.js
 157312e3571d2fb0  .claude/gpt/tests/t_r3.js
-2b96bd57a3a8a639  .claude/gpt/tests/t_r30.js
+37ad42581a3e89e6  .claude/gpt/tests/t_r30.js
 7693baddca2c3554  .claude/gpt/tests/t_r4.js
 f3852b0f5c2a358b  .claude/gpt/tests/t_r5.js
 9a462377d78234aa  .claude/gpt/tests/t_r6.js
