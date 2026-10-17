@@ -454,12 +454,39 @@ function ignoredByProject(ps, abs) {
 // Config that executes or controls behaviour is reviewed like code.
 const REVIEWABLE_CONFIG = /((^|[\\/])(dockerfile|docker-compose[^\\/]*\.ya?ml|makefile|package\.json|pyproject\.toml|requirements[^\\/]*\.txt|cargo\.toml|go\.mod|[^\\/]+\.set)$)|([\\/]\.github[\\/]workflows[\\/])|([\\/]\.claude[\\/](settings[^\\/]*\.json|gpt\.json|gpt[\\/]config\.json|agents[\\/]))|([\\/]\.codex[\\/]config\.toml$)/i;
 
+// MetaTrader Strategy Tester reports (generated .htm/.html) are output, not code: the names the tester and
+// the mql5-coding skill's tester script give them (ReportTester-<login>.html, CodexSmokeReport-<UTC time>-
+// <12 hex>.htm), or the tester's own markers in the first 4 KB (the tester writes UTF-16): MT5's generator
+// tag, MT4's "Strategy Tester:" title with its version and server tags. A deleted file: the version git
+// last had — HEAD's, or with `at` ({ top, revs }) the first of those revisions that has it (a deletion
+// committed in the turn: the commit, then the revision before it). Older history is not searched: a path
+// can be reused, so an old report there says nothing about the file that was deleted (unknown = code).
+const TESTER_REPORT_NAME = /^(Report(Tester|Optimizer)-\d+\.html?|CodexSmokeReport-\d{8}T\d{6}Z-[0-9a-f]{12}\.htm)$/i;
+function isTesterReport(abs, at) {
+  if (TESTER_REPORT_NAME.test(path.basename(abs))) return true;
+  let buf = Buffer.alloc(4096);
+  try { const fd = fs.openSync(abs, 'r'); try { buf = buf.slice(0, fs.readSync(fd, buf, 0, buf.length, 0)); } finally { fs.closeSync(fd); } } catch {
+    // gone: from the repository top, or the nearest folder that still exists
+    let d = at ? at.top : path.dirname(abs);
+    while (!fs.existsSync(d)) { const p = path.dirname(d); if (p === d) return false; d = p; }
+    const rel = path.relative(d, abs).replace(/\\/g, '/');
+    const show = rev => spawnSync('git', ['show', `${rev}:./${rel}`], { cwd: d, timeout: 5000, maxBuffer: 64 * 1024 * 1024, windowsHide: true });
+    const r = (at ? at.revs : ['HEAD']).map(show).find(x => x.status === 0 && x.stdout);
+    if (!r) return false;
+    buf = r.stdout.slice(0, 4096);
+  }
+  const text = (buf[0] === 0xff && buf[1] === 0xfe) || (buf[1] === 0 && buf[0] > 0) ? buf.toString('utf16le') : buf.toString('utf8');
+  return /<meta\s+name="generator"\s+content="strategy tester"/i.test(text) ||
+    (/<title>\s*Strategy Tester:/i.test(text) && /<meta\s+name="version"/i.test(text) && /<meta\s+name="server"/i.test(text));
+}
+
 // Throwaway files in the OS temp folder (test scaffolding, scratch scripts) are never review material.
 const TMP = path.resolve(os.tmpdir()).toLowerCase() + path.sep;
-function isCode(file) {
+function isCode(file, at) {
   const abs = path.resolve(file || '.');
   if (abs.toLowerCase().startsWith(TMP)) return false;
   const ext = path.extname(abs).slice(1).toLowerCase();
+  if ((ext === 'htm' || ext === 'html') && isTesterReport(abs, at)) return false;
   return CODE_EXT.has(ext) || REVIEWABLE_CONFIG.test(abs);
 }
 
@@ -570,7 +597,8 @@ function gitCommittedSince(root, rev, since) {
       const parts = r.stdout.split('\0').filter(Boolean);
       for (let i = 0; i + 1 < parts.length; i += 2) {
         const abs = path.join(top, parts[i + 1]);
-        if (!isCode(abs) || seen.has(abs.toLowerCase())) continue;
+        // (a file gone from disk: judged by its version in the commit, or before it for a deletion)
+        if (seen.has(abs.toLowerCase()) || !isCode(abs, { top, revs: [h, against || `${h}^`] })) continue;
         const deleted = !fs.existsSync(abs);
         let mtime = Date.now();
         try { if (!deleted) mtime = fs.statSync(abs).mtimeMs; } catch {}
@@ -1336,5 +1364,5 @@ module.exports = {
   projectSettings, projectFileSettings, setupSwitch, setupOffThroughout, startDiscoveryWindow, isCode, countLines, pending, reviewedAtFor, isSignificant, gitStatus, gitDeleted, gitChangedCode, minutesAgo,
   SENSITIVE_PATH, SENSITIVE_CONTENT, docTargetProblem, fileHash,
   codeSnapshot, statePath, pidAlive, isSensitiveFile, keepCommit, printOf, saveTurnPrints, readTurnPrints, changedByContentThisTurn, validateConfig, CONFIG_DEFAULTS, hookIssue, hookTime, recentHookIssues, HOOK_TIMES, sameAsBaseline, differsFromRev, revPrint, gitIgnored, DOCS_SERVER, DOCS_TOOLS, readDocsServer, mql5DocsServer, shellPrints, watchedIgnored, globalSetupFiles, changeKey, gitHead, gitCommittedSince, sessionRoot, knownSessionRoot, captureBaseline, setBaseline, baselineOf, lessonsFile, readLessons, quickChecks, cleanup, textSimilarity, HOOK_FIELDS,
-  REVIEWABLE_CONFIG, ignoredByProject, gitNotAuthored, repoStates, branchSwitch, noteNotAuthored, shareReceipt, pendingAnywhere,
+  REVIEWABLE_CONFIG, isTesterReport, ignoredByProject, gitNotAuthored, repoStates, branchSwitch, noteNotAuthored, shareReceipt, pendingAnywhere,
 };

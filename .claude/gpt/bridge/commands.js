@@ -249,20 +249,58 @@ const commands = {
     const file = positional[0] && path.resolve(positional[0]);
     if (!file || !fs.existsSync(file)) C.die('usage: gpt.js mql5-compile <file.mq5|.mq4>');
     if (!cfg.metaeditorPath || !fs.existsSync(cfg.metaeditorPath)) C.die(`MetaEditor not found (config.metaeditorPath = ${cfg.metaeditorPath})`);
-    const log = path.join(os.tmpdir(), `mql5-${process.pid}-${Date.now()}.log`);
     // Which version was compiled (evidence must match the code under review): the file and every source
-    // it includes, as one fingerprint.
-    const before = E.mqlSources(file);
-    const r = await E.runTracked(`"${cfg.metaeditorPath}" /compile:"${file}" /log:"${log}"`, 300000); // tree-killed on timeout
-    const after = E.mqlSources(file);
-    let text = '';
-    try { const b = fs.readFileSync(log); text = (b[0] === 0xff && b[1] === 0xfe) ? b.slice(2).toString('utf16le') : b.toString('utf8'); } catch {}
-    try { fs.rmSync(log, { force: true }); } catch {}
-    const lines = text.split(/\r?\n/).filter(l => /error|warning|result/i.test(l));
-    console.log(`compiled: ${file} (${before.files} source file(s), sources sha256 ${before.hash}, newest change ${before.newest})` +
-      (after.hash !== before.hash ? ` — SOURCES CHANGED during the compile (now ${after.hash}); results may not match` : '') +
-      (before.missing.length ? `; includes not found: ${before.missing.slice(0, 5).join(', ')}` : '') +
-      (before.truncated ? '; source set over 500 files — the fingerprint covers only the first 500' : '') +
+    // it includes or embeds, as one fingerprint. MetaEditor compiles a temporary copy of exactly that
+    // content (self-contained, see mqlCopy), so the project's .ex5 and logs are never written.
+    E.sweepCopies();
+    const libRoot = E.metaeditorRoot(cfg.metaeditorPath, file);
+    const before = E.mqlSources(file, libRoot);
+    const notCompiled = why => { console.log(`not compiled: ${file} — ${why}; nothing in the project was changed`); process.exit(1); };
+    if (before.truncated) notCompiled('its source set is over 2000 files, too many to copy completely');
+    const copy = E.mqlCopy(before, file);
+    if (copy.error) notCompiled(copy.error);
+    // removed however this ends (a cancelled gpt.js stops MetaEditor, then exits)
+    const removeCopy = () => { try { fs.rmSync(copy.dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }); } catch {} };
+    process.once('exit', removeCopy);
+    // one log per run (a probe's result can never be read as the real compile's); a log that can't be
+    // cleared stops it
+    const compile = async (kind = '') => {
+      const log = copy.main.replace(/\.[^.\\/]+$/, '') + kind + '.log'; // (the real one: also where a plain /log would put it)
+      try { fs.rmSync(log, { force: true }); } catch {}
+      if (fs.existsSync(log)) notCompiled(`the old compiler log ${log} could not be removed`);
+      const res = await E.runTracked(`"${cfg.metaeditorPath}" /compile:"${copy.main}"${copy.includeRoot ? ` /include:"${copy.includeRoot}"` : ''} /log:"${log}"`, 300000); // tree-killed on timeout
+      let out = '';
+      try { const b = fs.readFileSync(log); out = (b[0] === 0xff && b[1] === 0xfe) ? b.slice(2).toString('utf16le') : b.toString('utf8'); } catch {}
+      return { r: res, text: out };
+    };
+    // A directive the merged copy would resolve differently from the project makes the copy unfaithful —
+    // unless MetaEditor never opens it (an inactive #ifdef branch, a comment): a probe compile shows that.
+    const blocking = copy.conflicts.find(c => !c.probe);
+    if (blocking) notCompiled(`in the copy, ${blocking.what} would find ${blocking.got || 'nothing'} instead of ${blocking.link.to || 'nothing'}`);
+    let probeNote = '';
+    if (copy.conflicts.length) {
+      const p = E.mqlProbe(copy, before);
+      if (p.error) notCompiled(p.error);
+      const pr = await compile('.probe');
+      p.restore();
+      const opened = p.marks.find(m => pr.text.toLowerCase().includes(m.mark.toLowerCase()));
+      if (opened) notCompiled(`${opened.conflict.what} finds no file in the project, and MetaEditor does open it (a probe compile reported it missing): the project's compile fails there with "not found"; its other results are unknown`);
+      if (pr.r.status === null || !/Result:\s*0\s+errors?/i.test(pr.text)) {
+        const c0 = p.marks[0].conflict, why = pr.r.status === null ? 'it timed out' : E.fromCopy((pr.text.split(/\r?\n/).find(x => /error/i.test(x)) || 'no compiler result').trim(), copy);
+        notCompiled(`in the copy, ${c0.what} would find ${c0.got} instead of nothing, and a probe compile could not show that MetaEditor never opens it (the probe: ${why})`);
+      }
+      probeNote = `; ${p.marks.length} directive(s) that would find MetaEditor's own file in the copy, where the project has none, are never opened (shown by a probe compile)`;
+    }
+    let r, text;
+    try { ({ r, text } = await compile()); } finally { removeCopy(); process.removeListener('exit', removeCopy); }
+    const after = E.mqlSources(file, libRoot);
+    // compiler messages name the copy: show the project's paths
+    // (selected first — a path may contain "error" — then mapped in one pass)
+    const selected = text.split(/\r?\n/).filter(l => /error|warning|result/i.test(l));
+    const lines = selected.length ? E.fromCopy(selected.join('\n'), copy).split('\n') : [];
+    console.log(`compiled: ${file} (from a temporary copy — the project's .ex5 is not updated; ${before.files} source file(s), sources sha256 ${before.hash}, newest change ${before.newest})` +
+      (after.hash !== before.hash ? ` — SOURCES CHANGED during the compile (now ${after.hash}); this result is for the earlier version` : '') +
+      (before.missing.length ? `; includes not found: ${before.missing.slice(0, 5).join(', ')}` : '') + probeNote +
       (r.status === null ? '; MetaEditor TIMED OUT and was stopped — compile FAILED' : '') + (r.contained ? '' : `; ${E.UNCONTAINED_NOTE}`));
     console.log(lines.join('\n') || '(no compiler output — MetaEditor did not run?)');
     const m = text.match(/Result:\s*(\d+)\s+errors?/i);

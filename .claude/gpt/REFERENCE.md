@@ -10,6 +10,8 @@
   - `--full` does a whole-file audit; it's automatic when nothing changed.
 - **Follow-up:** `review --followup <log.md> --file <response.md> [--fresh]`. It resumes GPT's session, so it's fast. Unaddressed findings come back marked OPEN.
 - **MQL5 evidence:** `--evidence 'node "C:/Users/Shari/.claude/gpt/gpt.js" mql5-compile "<file.mq5>"'`. Keep the inner quotes.
+  - It compiles a temporary copy of the file, its includes and resources, so the project's `.ex5` and logs are never touched (a tester run can keep going).
+  - If the copy would let an include find a file the project lacks, a probe compile first checks that MetaEditor never opens it (e.g. an inactive `#ifdef`). Otherwise it prints "not compiled" and why.
 - **MQL5 docs:** runs on `.mq5`/`.mqh`/`.set` files get the read-only MQL5 reference (the `mql5-chm` server, as `~/.codex/config.toml` defines it).
   - This covers review, follow-ups, score, digest, investigate and testplan. `digest --backtest` and `--mql5-docs` ask for it too.
   - GPT cites the topic it checked. Without the reference, GPT marks API facts "unverified against the MQL5 docs", and the run's output and log say why.
