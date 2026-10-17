@@ -1,7 +1,7 @@
-Released 2026-10-17T20:06:16.554Z
+Released 2026-10-17T20:14:43.026Z
 Source: C:/Users/Shari/.claude
-Checks: OK: 467 passed, 0 failed, 0 skipped, 45 scripts, 296s
-Tested: setup sha256 39498a624f6c0cb0, backup sha256 4ff7ab167c09eb6b
+Checks: OK: 467 passed, 0 failed, 0 skipped, 45 scripts, 297s
+Tested: setup sha256 eafea7f80b55e37a, backup sha256 9f32463a44f022d1
 
 376b9d9b0ce41bda  .claude/CLAUDE.md
 dd336cbdcc8a6821  .claude/agents/fallback-reviewer.md
@@ -54,7 +54,7 @@ c16e5d45abe9cb8e  .claude/gpt/tests/t_r24.js
 a243362efb29efcc  .claude/gpt/tests/t_r25.js
 24d46282c53dfbc7  .claude/gpt/tests/t_r26.js
 a12de5b0c976b8a2  .claude/gpt/tests/t_r27.js
-495fe278dd20de3b  .claude/gpt/tests/t_r28.js
+9ca06cf239ae3e8b  .claude/gpt/tests/t_r28.js
 006ef4d6e17faf5e  .claude/gpt/tests/t_r29.js
 157312e3571d2fb0  .claude/gpt/tests/t_r3.js
 42b087fcc2bab63f  .claude/gpt/tests/t_r30.js
