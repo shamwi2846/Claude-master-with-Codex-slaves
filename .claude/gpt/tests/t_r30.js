@@ -83,17 +83,23 @@ fs.rmSync(portable, { recursive: true, force: true });
 ok(E.metaeditorRoot(ME, 'x.mq5') === null && E.metaeditorRoot('', 'x.mq5') === null, 'none: null');
 if (appdata0 === undefined) delete process.env.APPDATA; else process.env.APPDATA = appdata0;
 
-// 3. The source set: includes (next to the file, then the main file, then the MQL5 folders), resources
+// 3. The source set: "x" next to the including file only (as MetaEditor: not the main file's folder, not an
+// Include folder), <x> from the MQL5 folders, resources
 const A = path.join(W, 'proj a'), EA = put(path.join(A, 'EA.mq5'),
   '#include <Lib\\L.mqh>\n#include "inc\\a.mqh"\n#resource "\\\\Files\\\\lib.bin" as uchar D[]\n#resource "data\\\\near.bin" as uchar N[]\nint OnInit(){return 0;}\n');
-put(path.join(A, 'inc', 'a.mqh'), '#include "shared.mqh"\nint A(){return 0;}\n'); // shared.mqh is next to the main file
-put(path.join(A, 'shared.mqh'), 'int S(){return 0;}\n');
+put(path.join(A, 'inc', 'a.mqh'), '#include "shared.mqh"\nint A(){return 0;}\n');
+put(path.join(A, 'inc', 'shared.mqh'), 'int S(){return 0;}\n');
 put(path.join(A, 'data', 'near.bin'), 'N');
 const sa = E.mqlSources(EA, LIB);
 const names = s => s.entries.map(e => path.relative(W, e.f).replace(/\\/g, '/')).sort();
 ok(JSON.stringify(names(sa)) === JSON.stringify(['appdata/MetaQuotes/Terminal/' + id + '/MQL5/Files/lib.bin', 'appdata/MetaQuotes/Terminal/' + id + '/MQL5/Include/Lib/Base.mqh',
-  'appdata/MetaQuotes/Terminal/' + id + '/MQL5/Include/Lib/L.mqh', 'proj a/EA.mq5', 'proj a/data/near.bin', 'proj a/inc/a.mqh', 'proj a/shared.mqh'].sort()) && !sa.missing.length && sa.root === null,
-  `library includes and resources from MetaEditor's folder, quoted includes next to the main file, embedded files: all in the fingerprint (${names(sa).join(', ')})`);
+  'appdata/MetaQuotes/Terminal/' + id + '/MQL5/Include/Lib/L.mqh', 'proj a/EA.mq5', 'proj a/data/near.bin', 'proj a/inc/a.mqh', 'proj a/inc/shared.mqh'].sort()) && !sa.missing.length && sa.root === null,
+  `library includes and resources from MetaEditor's folder, nested quoted includes, embedded files: all in the fingerprint (${names(sa).join(', ')})`);
+const QM = path.join(W, 'qmain'), QE = put(path.join(QM, 'E.mq5'), '#include "sub\\a.mqh"\n#include "Lib\\L.mqh"\n');
+put(path.join(QM, 'sub', 'a.mqh'), '#include "s.mqh"\n'); put(path.join(QM, 's.mqh'), ''); // s.mqh only next to the main file
+const sq = E.mqlSources(QE, LIB);
+ok(sq.files === 2 && sq.missing.some(m => /sub[\\/]s\.mqh$/.test(m)) && sq.missing.some(m => /qmain[\\/]Lib[\\/]L\.mqh$/.test(m)),
+  'a quoted include found only next to the main file, or only in an Include folder, is missing (MetaEditor looks nowhere else)');
 const sNone = E.mqlSources(EA, null);
 ok(sNone.missing.some(m => /Lib[\\/]L\.mqh$/.test(m)) && sNone.missing.includes('\\\\Files\\\\lib.bin') && sNone.files === 4, 'without a known MQL5 folder those are reported missing');
 fs.writeFileSync(path.join(A, 'data', 'near.bin'), 'M');
@@ -137,7 +143,34 @@ ok(/would share one place in the copy/.test(cy.error || '') && !cy.dir, 'files t
 put(path.join(M, 'Include', 'Pkg', 'A.mqh'), '#include "B.mqh"\n'); put(path.join(LIB, 'Include', 'Pkg', 'B.mqh'), 'int B(){return 0;}\n');
 const Z = put(path.join(M, 'Experts', 'Z.mq5'), '#include <Pkg\\A.mqh>\n#include <Pkg\\B.mqh>\n');
 const cz = E.mqlCopy(E.mqlSources(Z, LIB), Z);
-ok(/in the copy, #include "B\.mqh" in .*A\.mqh would find .*B\.mqh instead of nothing \(even if it sits in an inactive #ifdef branch\)/.test(cz.error || '') && !cz.dir, "an include the copy would resolve differently from the project: refused (a missing include can't be hidden)");
+ok(cz.conflicts.length === 1 && cz.conflicts[0].probe && /^#include "B\.mqh" in .*A\.mqh$/.test(cz.conflicts[0].what) && /Pkg[\\/]B\.mqh$/.test(cz.conflicts[0].got),
+  'an include the merged copy would supply where the project has none: reported as a conflict to probe');
+fs.rmSync(cz.dir, { recursive: true, force: true });
+// the probe marks exactly that directive, keeps every other byte (UTF-16 as UTF-16, other files byte for byte), and restores
+const ansi = Buffer.concat([Buffer.from('// caf'), Buffer.from([0xe9]), Buffer.from('\n#ifdef __MQL4__\n#  include \\\n "B.mqh"\n#endif\nint A2(){return 0;}\n')]);
+put(path.join(M, 'Include', 'Pkg', 'A2.mqh'), ansi);
+put(path.join(M, 'Include', 'Pkg', 'A3.mqh'), utf16('#ifdef __MQL4__\r\n#include "B.mqh"\r\n#endif\r\nint A3(){return 0;}\r\n'));
+const Z2 = put(path.join(M, 'Experts', 'Z2.mq5'), '#include <Pkg\\A2.mqh>\n#include <Pkg\\A3.mqh>\n#include <Pkg\\B.mqh>\nint OnInit(){return A2()+A3();}\n');
+const s2 = E.mqlSources(Z2, LIB), c2 = E.mqlCopy(s2, Z2), p2 = E.mqlProbe(c2, s2);
+const a2c = c2.copyOf.get(path.join(M, 'Include', 'Pkg', 'A2.mqh').toLowerCase()), a3c = c2.copyOf.get(path.join(M, 'Include', 'Pkg', 'A3.mqh').toLowerCase());
+const probed2 = fs.readFileSync(a2c), probed3 = fs.readFileSync(a3c), mk = p2.marks.map(m => m.mark);
+ok(p2.marks.length === 2 && probed2.equals(Buffer.from(ansi.toString('latin1').replace('"B.mqh"', `"${mk[0]}"`), 'latin1')) && probed3[0] === 0xff && probed3[1] === 0xfe &&
+  probed3.slice(2).toString('utf16le').includes(`#include "${mk[1]}"`) && !probed3.slice(2).toString('utf16le').includes('"B.mqh"'),
+  'the probe marks each conflicting directive (continued line, ANSI bytes, UTF-16 file) and keeps every other byte');
+p2.restore();
+ok(fs.readFileSync(a2c).equals(ansi) && fs.readFileSync(a3c).equals(fs.readFileSync(path.join(M, 'Include', 'Pkg', 'A3.mqh'))), '... and puts the copied files back exactly');
+// an icon MetaEditor's folder supplies in the copy, named by an active directive continued between
+// "property" and "icon" and by a commented-out one: both are marked, and the edited file is read again
+put(path.join(LIB, 'Experts', 'x.ico'), 'ICO');
+const IC = put(path.join(M, 'Experts', 'I.mq5'), '#resource "\\\\Experts\\\\x.ico"\n/*\n#property icon "x.ico"\n*/\n#property \\\n  icon "x.ico"\nint OnInit(){return 0;}\n');
+const si = E.mqlSources(IC, LIB), ci = E.mqlCopy(si, IC), pi = E.mqlProbe(ci, si);
+const icoText = fs.readFileSync(ci.main, 'latin1');
+ok(ci.conflicts.filter(c => c.probe).length === 2 && pi.marks.length === 1 && icoText.split(pi.marks[0].mark).length === 3 && !E.directives(icoText).some(d => d.raw === 'x.ico'),
+  'a resource named twice (one directive continued between "property" and "icon"): every occurrence is marked, checked by reading the file again');
+pi.restore(); fs.rmSync(ci.dir, { recursive: true, force: true });
+c2.conflicts[0].link = { ...c2.conflicts[0].link, raw: 'C.mqh' };
+ok(/could not be marked for a probe compile/.test(E.mqlProbe(c2, s2).error || '') && fs.readFileSync(a2c).equals(ansi), 'a directive that cannot be marked: refused, nothing changed');
+fs.rmSync(c2.dir, { recursive: true, force: true });
 // copies a killed compile left behind are removed once an hour old
 const oldCopy = path.join(os.tmpdir(), `gpt-compile-r30old-${process.pid}`), newCopy = path.join(os.tmpdir(), `gpt-compile-r30new-${process.pid}`);
 put(path.join(oldCopy, 'MQL5', 'x.mq5'), ''); put(path.join(newCopy, 'MQL5', 'x.mq5'), '');
@@ -147,18 +180,35 @@ ok(!fs.existsSync(oldCopy) && fs.existsSync(newCopy), 'stale copies (over an hou
 fs.rmSync(newCopy, { recursive: true, force: true });
 ok(/process\.once\('exit', removeCopy\)/.test(require('./bridge-kit').src), 'a cancelled compile removes its copy too (on exit, after MetaEditor is stopped)');
 
-// 5. gpt.js mql5-compile end to end, with a fake MetaEditor (records what it was given, "compiles": writes
-// <name>.ex5 next to the file and a UTF-16 log; an error when the source says BOOM)
+// 5. gpt.js mql5-compile end to end, with a fake MetaEditor. It records what it was given, then "compiles":
+// it opens includes as MetaEditor does ("x" next to the including file, <x> in the /include folder's
+// Include; lines inside #ifdef __MQL4__ ... #endif are skipped), reports a missing one as error 106 and a
+// file saying BOOM as error 100, and writes <name>.ex5 next to the file and a UTF-16 log.
 const REC = path.join(W, 'rec.json');
 put(path.join(ME_DIR, 'me.js'), `const fs = require('fs'), path = require('path');
 const arg = k => (process.argv.slice(2).find(a => a.toLowerCase().startsWith('/' + k + ':')) || '').slice(k.length + 2);
-const src = arg('compile'), log = arg('log'), inc = arg('include'), text = fs.readFileSync(src, 'utf8'), files = [];
+const src = arg('compile'), log = arg('log'), inc = arg('include'), text = fs.readFileSync(src, 'utf8'), files = [], errors = [], opened = [];
+const read = f => { const b = fs.readFileSync(f); return b[0] === 0xff && b[1] === 0xfe ? b.slice(2).toString('utf16le') : b.toString('latin1'); };
 (function walk(d, rel) { for (const n of fs.readdirSync(d)) { const p = path.join(d, n); if (fs.statSync(p).isDirectory()) walk(p, rel + n + '/'); else files.push(rel + n); } })(inc || path.dirname(src), '');
+const probeLeft = files.some(f => read(path.join(inc || path.dirname(src), f)).includes('__gpt_probe'));
+(function visit(f) {
+  if (opened.includes(f.toLowerCase())) return; opened.push(f.toLowerCase());
+  let skip = 0;
+  for (const line of read(f).replace(/\\\\\\r?\\n/g, ' ').split(/\\r?\\n/)) {
+    if (/^\\s*#ifdef\\s+__MQL4__/.test(line)) { skip++; continue; }
+    if (skip && /^\\s*#endif/.test(line)) { skip--; continue; }
+    if (skip) continue;
+    const m = line.match(/^\\s*#\\s*include\\s*(?:"([^"]+)"|<([^>]+)>)/);
+    if (m) { const t = m[1] ? path.join(path.dirname(f), m[1]) : path.join(inc || 'none', 'Include', m[2]); if (fs.existsSync(t)) visit(t); else errors.push(f + "(1,10) : error 106: file '" + t + "' not found"); }
+    const r = line.match(/^\\s*#\\s*(?:resource|property\\s+icon)\\s*"([^"]+)"/);
+    if (r) { const n = r[1].replace(/\\\\\\\\/g, '\\\\'), t = /^[\\\\/]/.test(n) ? path.join(inc || 'none', n) : path.join(path.dirname(f), n); if (!fs.existsSync(t)) errors.push(f + "(1,1) : error 313: invalid resource path '" + n + "'"); }
+    if (/BOOM/.test(line)) errors.push(f + '(2,1) : error 100: boom');
+  }
+})(src);
 if (process.env.FAKE_ME_MUTATE) fs.appendFileSync(process.env.FAKE_ME_MUTATE, '// edited during the compile\\n');
 fs.writeFileSync(src.replace(/\\.mq5$/i, '.ex5'), 'EX5');
-const bad = /BOOM/.test(text);
-fs.writeFileSync(log, Buffer.concat([Buffer.from([0xff, 0xfe]), Buffer.from((bad ? src + '(2,1) : error 100: boom\\r\\n' : '') + 'Result: ' + (bad ? 1 : 0) + ' errors, 0 warnings\\r\\n', 'utf16le')]));
-fs.writeFileSync(process.env.FAKE_ME_REC, JSON.stringify({ src, log, inc, text, files }));
+fs.writeFileSync(log, Buffer.concat([Buffer.from([0xff, 0xfe]), Buffer.from(errors.map(e => e + '\\r\\n').join('') + 'Result: ' + errors.length + ' errors, 0 warnings\\r\\n', 'utf16le')]));
+fs.appendFileSync(process.env.FAKE_ME_REC, JSON.stringify({ src, log, inc, text, files, errors, probeLeft }) + '\\n');
 `);
 const cf = path.join(L.HOME, 'config.json'), orig = fs.readFileSync(cf, 'utf8');
 fs.writeFileSync(cf, JSON.stringify({ ...JSON.parse(orig), metaeditorPath: ME }));
@@ -166,17 +216,18 @@ const list = d => { const out = []; (function walk(x) { for (const n of fs.readd
 const compile = (file, extra = {}) => {
   fs.rmSync(REC, { force: true });
   const r = spawnSync(process.execPath, [__G + 'gpt.js', 'mql5-compile', file], { cwd: W, encoding: 'utf8', env: { ...process.env, APPDATA, FAKE_ME_REC: REC, ...extra } });
-  let rec = {}; try { rec = JSON.parse(fs.readFileSync(REC, 'utf8')); } catch {}
+  let calls = []; try { calls = fs.readFileSync(REC, 'utf8').trim().split('\n').map(l => JSON.parse(l)); } catch {}
+  const rec = calls[calls.length - 1] || {};
   const top = rec.src ? path.join(os.tmpdir(), path.relative(os.tmpdir(), rec.src).split(/[\\/]/)[0]) : null;
-  return { ...r, rec, gone: !!top && !fs.existsSync(top) };
+  return { ...r, rec, calls, gone: !!top && !fs.existsSync(top) };
 };
 try {
   const b0 = list(A), r1 = compile(EA);
   ok(r1.status === 0 && /^compiled: .*EA\.mq5 \(from a temporary copy — the project's \.ex5 is not updated; 7 source file/.test(r1.stdout) && /Result: 0 errors/.test(r1.stdout) && !/includes not found/.test(r1.stdout),
     `a clean compile: exit 0, the result shown (${(r1.stdout + r1.stderr).trim().split('\n')[0]})`);
   ok(list(A) === b0 && r1.rec.src && r1.rec.src.toLowerCase().startsWith(tmp) && r1.gone, 'the project is untouched (no .ex5, no log); MetaEditor compiled a temporary copy, removed afterwards');
-  ok(r1.rec.inc === path.join(path.dirname(path.dirname(path.dirname(r1.rec.src)))) && ['Include/Lib/L.mqh', 'Include/Lib/Base.mqh', 'Files/lib.bin', 'Experts/proj a/inc/a.mqh', 'Experts/proj a/shared.mqh', 'Experts/proj a/data/near.bin'].every(f => r1.rec.files.includes(f)),
-    'MetaEditor gets /include: the copy, with every file the compile needs');
+  ok(r1.rec.inc === path.join(path.dirname(path.dirname(path.dirname(r1.rec.src)))) && ['Include/Lib/L.mqh', 'Include/Lib/Base.mqh', 'Files/lib.bin', 'Experts/proj a/inc/a.mqh', 'Experts/proj a/inc/shared.mqh', 'Experts/proj a/data/near.bin'].every(f => r1.rec.files.includes(f)) && r1.calls.length === 1 && !r1.rec.errors.length,
+    'MetaEditor gets /include: the copy, with every file the compile needs (one compile, no probe)');
   fs.writeFileSync(EA, rd(EA).replace('int OnInit', 'BOOM\nint OnInit'));
   const r2 = compile(EA);
   ok(r2.status === 1 && r2.stdout.includes(`${EA}(2,1) : error 100: boom`) && !r2.stdout.toLowerCase().includes(tmp) && r2.gone, "a failed compile: exit 1, errors name the project's file");
@@ -186,7 +237,19 @@ try {
   ok(r4.status === 0 && list(path.join(W, 'repo')) === bx && path.basename(r4.rec.inc) === 'MQL5' && ['Include/Mine/m.mqh', 'Include/Lib/L.mqh', 'Images/i.bmp', 'Experts/X/X.mq5'].every(f => r4.rec.files.includes(f)) && r4.gone,
     'a project in an MQL5 folder: compiled from a copy of that folder, the project untouched');
   const r5 = compile(Z);
-  ok(r5.status === 1 && /^not compiled: .*Z\.mq5 — in the copy, #include "B\.mqh"/.test(r5.stdout) && !r5.rec.src, 'a copy that would change an include: not compiled, MetaEditor not run, and said why');
+  ok(r5.status === 1 && /^not compiled: .*Z\.mq5 — #include "B\.mqh" in .*A\.mqh finds no file in the project, and MetaEditor does open it/.test(r5.stdout) && r5.calls.length === 1 && r5.gone,
+    'an include the merged copy would supply, and MetaEditor opens: the probe shows it; not compiled, said why (the project fails there)');
+  const bz = list(path.join(W, 'repo')), r7 = compile(Z2);
+  ok(r7.status === 0 && r7.calls.length === 2 && /2 directive\(s\) that would find MetaEditor's own file in the copy, where the project has none, are never opened \(shown by a probe compile\)/.test(r7.stdout) &&
+    !r7.calls[1].probeLeft && r7.calls[0].probeLeft && r7.calls[0].log !== r7.calls[1].log && /Result: 0 errors/.test(r7.stdout) && list(path.join(W, 'repo')) === bz && r7.gone,
+    'such includes in inactive #ifdef branches: the probe shows MetaEditor skips them, then the real compile runs on the restored copy (with a log of its own)');
+  const ri = compile(IC);
+  ok(ri.status === 1 && /^not compiled: .*I\.mq5 — #resource "x\.ico" in .*I\.mq5 finds no file in the project, and MetaEditor does open it/.test(ri.stdout) && ri.calls.length === 1,
+    'the active icon directive is opened by the probe: never compiled as if the project had the icon');
+  fs.writeFileSync(Z2, rd(Z2) + 'BOOM\n');
+  const r8 = compile(Z2);
+  ok(r8.status === 1 && r8.calls.length === 1 && /could not show that MetaEditor never opens it \(the probe: .*Z2\.mq5\(2,1\) : error 100: boom\)/.test(r8.stdout) && r8.gone,
+    "a probe that fails for another reason proves nothing: not compiled, said why (naming the project's file)");
   const BIG = path.join(W, 'big'), lines = [];
   for (let i = 0; i <= 2000; i++) { put(path.join(BIG, 'inc', `f${i}.mqh`), ''); lines.push(`#include "inc\\f${i}.mqh"`); }
   const r6 = compile(put(path.join(BIG, 'Big.mq5'), lines.join('\n') + '\n'));

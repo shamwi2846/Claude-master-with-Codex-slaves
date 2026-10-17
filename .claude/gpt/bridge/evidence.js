@@ -133,14 +133,27 @@ function metaeditorRoot(metaeditorPath, file) {
     .find(d => d && fs.existsSync(path.join(d, 'Include'))) || null;
 }
 
-// The source set an MQL4/5 file compiles from: the file, its #include files, followed recursively
-// ("x.mqh" next to the including file or the main file, then <x.mqh> in the Include folder of the MQL5|MQL4
-// folder the file is in, then of `libRoot`, MetaEditor's own), and the files the compiler embeds (#resource,
-// #property icon: "\\x" from those MQL5|MQL4 folders, else next to the file). Returns { files, hash (one
-// sha256 over every path + content), newest (latest change), missing, truncated (stopped at 2000 files: the
-// fingerprint doesn't cover the rest), root (the enclosing MQL5|MQL4 folder, or null), libRoot, entries
-// ([{ f, buf }]: exactly the content fingerprinted), links ([{ from, kind, name, to }]: every directive and
-// the file it resolved to, null if none; kind q "x", a <x>, r resource next to the file, rr "\\x") }.
+// The source set an MQL4/5 file compiles from: the file, its #include files, followed recursively ("x.mqh"
+// only next to the including file — MetaEditor searches nowhere else, measured; <x.mqh> in the Include
+// folder of the MQL5|MQL4 folder the file is in, then of `libRoot`, MetaEditor's own), and the files the
+// compiler embeds (#resource, #property icon: "\\x" from those MQL5|MQL4 folders, else next to the file).
+// Returns { files, hash (one sha256 over every path + content), newest (latest change), missing, truncated
+// (stopped at 2000 files: the fingerprint doesn't cover the rest), root (the enclosing MQL5|MQL4 folder, or
+// null), libRoot, entries ([{ f, buf }]: exactly the content fingerprinted), links ([{ from, kind, name,
+// raw, to }]: every directive, its name as written, and the file it resolved to, null if none; kind q "x",
+// a <x>, r resource next to the file, rr "\\x") }.
+// A source file's text (UTF-16 with its BOM, else UTF-8).
+function sourceText(buf) { return (buf[0] === 0xff && buf[1] === 0xfe) ? buf.slice(2).toString('utf16le') : buf.toString('utf8'); }
+// The #include, #resource and #property icon directives in source text, read like MetaEditor reads lines (a
+// "\" at a line end continues the line; a UTF-8 BOM is not part of line 1): [{ type, quoted, raw }].
+function directives(text) {
+  text = text.replace(/^﻿/, '').replace(/\\\r?\n/g, ' ');
+  const out = [];
+  for (const [, q, a] of text.matchAll(/^[ \t]*#[ \t]*include[ \t]*(?:"([^"\r\n]+)"|<([^>\r\n]+)>)/gm)) out.push({ type: 'include', quoted: q !== undefined, raw: q || a });
+  for (const [, r] of text.matchAll(/^[ \t]*#[ \t]*(?:resource|property[ \t]+icon)[ \t]*"([^"\r\n]+)"/gm)) out.push({ type: 'resource', quoted: true, raw: r });
+  return out;
+}
+
 function mqlSources(main, libRoot = null, cap = 2000) {
   main = path.resolve(main);
   let up = path.dirname(main), root = null;
@@ -153,19 +166,17 @@ function mqlSources(main, libRoot = null, cap = 2000) {
     let buf; try { buf = fs.readFileSync(f); } catch { missing.push(f); continue; }
     seen.set(f.toLowerCase(), { f, buf, m: fs.statSync(f).mtimeMs });
     if (!source) continue; // an embedded file (image, sound, model): not parsed
-    // (a directive continued with "\" at the end of the line is one line; a UTF-8 BOM is not part of line 1)
-    const text = ((buf[0] === 0xff && buf[1] === 0xfe) ? buf.slice(2).toString('utf16le') : buf.toString('utf8')).replace(/^﻿/, '').replace(/\\\r?\n/g, ' ');
-    for (const [, q, a] of text.matchAll(/^[ \t]*#[ \t]*include[ \t]*(?:"([^"\r\n]+)"|<([^>\r\n]+)>)/gm)) {
-      const name = (q || a).replace(/[\\/]+/g, path.sep), here = path.resolve(path.dirname(f), name);
-      const local = q && [here, path.resolve(path.dirname(main), name)].find(p => fs.existsSync(p));
-      const lib = incs.map(d => path.resolve(d, name)).find(p => fs.existsSync(p));
-      links.push({ from: f, kind: q ? 'q' : 'a', name, to: local || lib || null });
-      queue.push([local || lib || (q || !incs.length ? here : path.resolve(incs[0], name)), true]);
+    const dirs = directives(sourceText(buf));
+    for (const { quoted: q, raw } of dirs.filter(d => d.type === 'include')) {
+      const name = raw.replace(/[\\/]+/g, path.sep), here = path.resolve(path.dirname(f), name);
+      const found = q ? (fs.existsSync(here) ? here : null) : incs.map(d => path.resolve(d, name)).find(p => fs.existsSync(p)) || null;
+      links.push({ from: f, kind: q ? 'q' : 'a', name, raw, to: found });
+      queue.push([found || (q || !incs.length ? here : path.resolve(incs[0], name)), true]);
     }
-    for (const [, r] of text.matchAll(/^[ \t]*#[ \t]*(?:resource|property[ \t]+icon)[ \t]*"([^"\r\n]+)"/gm)) {
+    for (const { raw: r } of dirs.filter(d => d.type === 'resource')) {
       const name = r.replace(/\\\\/g, '\\').replace(/[\\/]+/g, path.sep), rooted = /^[\\/]/.test(name);
       const found = rooted ? roots.map(d => path.join(d, name)).find(p => fs.existsSync(p)) : [path.resolve(path.dirname(f), name)].find(p => fs.existsSync(p));
-      links.push({ from: f, kind: rooted ? 'rr' : 'r', name: rooted ? name.slice(1) : name, to: found || null });
+      links.push({ from: f, kind: rooted ? 'rr' : 'r', name: rooted ? name.slice(1) : name, raw: r, to: found || null });
       const abs = found || (rooted ? roots[0] && path.join(roots[0], name) : path.resolve(path.dirname(f), name));
       if (abs) queue.push([abs, false]); else missing.push(r);
     }
@@ -185,9 +196,11 @@ function mqlSources(main, libRoot = null, cap = 2000) {
 // depends on the path's length — so a copy can't rely on that.) The project's files: the enclosing MQL5|MQL4
 // folder's layout when there is one, else under <copy>/MQL5/Experts/<project folder>. Returns { dir (remove
 // it afterwards), main (the copy of `main`), includeRoot (null: no MQL5 folder known, MetaEditor's default),
-// paths ([copy, original] pairs, files and folders) } or { error }. Refused (nothing written) when two files
-// would share a place, or when any #include/#resource would find a different file in the copy than in the
-// project (e.g. a quoted include that is missing in the project but present in the merged copy).
+// paths ([copy, original] pairs, files and folders), copyOf (original -> copy), conflicts } or { error }
+// (two files would share a place: nothing written). `conflicts`: directives that would find a different file
+// in the copy than in the project, read without the preprocessor ([{ link, what, got, probe }]); `probe`:
+// missing in the project but supplied by the merged copy — harmless only if MetaEditor never opens it
+// (an inactive #ifdef branch, a comment), which mqlProbe can show.
 function mqlCopy(src, main) {
   main = path.resolve(main);
   const inside = (d, f) => { const r = path.relative(d, f); return !!r && !r.startsWith('..') && !path.isAbsolute(r); };
@@ -214,20 +227,18 @@ function mqlCopy(src, main) {
     if (placed.has(to.toLowerCase())) return { error: `${e.f} and ${placed.get(to.toLowerCase())} would share one place in the copy` };
     placed.set(to.toLowerCase(), e.f); copyOf.set(e.f.toLowerCase(), to);
   }
-  const mainCopy = copyOf.get(main.toLowerCase());
-  // every directive must find the same file in the copy (the same search order as mqlSources, with the
-  // copy's include folder standing for both MQL5 folders); MetaEditor's default folder isn't in the copy
+  // every directive should find the same file in the copy (MetaEditor's search: "x" next to the including
+  // file only, <x> and "\\x" in the copy's include folder, which stands for both MQL5 folders; MetaEditor's
+  // default folder isn't in the copy)
+  const conflicts = [];
   for (const l of src.links || []) {
     if (!includeRoot && (l.kind === 'a' || l.kind === 'rr')) continue;
-    const from = copyOf.get(l.from.toLowerCase()), inc = includeRoot && path.join(includeRoot, 'Include', l.name);
-    const cands = l.kind === 'q' ? [path.join(path.dirname(from), l.name), path.join(path.dirname(mainCopy), l.name), inc]
-      : l.kind === 'a' ? [inc] : l.kind === 'r' ? [path.join(path.dirname(from), l.name)] : [path.join(includeRoot, l.name)];
-    const got = cands.find(c => c && placed.has(c.toLowerCase())) || null, want = l.to ? copyOf.get(l.to.toLowerCase()) || null : null;
-    if ((got || '').toLowerCase() !== (want || '').toLowerCase()) {
-      const what = `${l.kind === 'q' ? `#include "${l.name}"` : l.kind === 'a' ? `#include <${l.name}>` : `#resource "${l.name}"`} in ${l.from}`;
-      // (directives are read without the preprocessor: one in an inactive #ifdef branch counts too)
-      return { error: `in the copy, ${what} would find ${got ? placed.get(got.toLowerCase()) : 'nothing'} instead of ${l.to || 'nothing'} (even if it sits in an inactive #ifdef branch)` };
-    }
+    const from = copyOf.get(l.from.toLowerCase());
+    const cand = l.kind === 'q' || l.kind === 'r' ? path.join(path.dirname(from), l.name) : path.join(includeRoot, ...(l.kind === 'a' ? ['Include'] : []), l.name);
+    const got = placed.has(cand.toLowerCase()) ? cand : null, want = l.to ? copyOf.get(l.to.toLowerCase()) || null : null;
+    if ((got || '').toLowerCase() === (want || '').toLowerCase()) continue;
+    const what = `${l.kind === 'q' ? `#include "${l.raw}"` : l.kind === 'a' ? `#include <${l.raw}>` : `#resource "${l.raw}"`} in ${l.from}`;
+    conflicts.push({ link: l, what, got: got && placed.get(got.toLowerCase()), probe: !!got && !want });
   }
   const paths = [[mirror, base]].concat(includeRoot && lib ? [[includeRoot, src.root ? src.root : lib]] : []);
   try {
@@ -238,7 +249,49 @@ function mqlCopy(src, main) {
       fs.writeFileSync(to, e.buf);
     }
   } catch (e) { fs.rmSync(dir, { recursive: true, force: true }); return { error: `could not copy the sources (${e.message})` }; }
-  return { dir, main: mainCopy, includeRoot, paths };
+  return { dir, main: copyOf.get(main.toLowerCase()), includeRoot, paths, copyOf, conflicts };
+}
+
+// Prepares a written copy (mqlCopy) to show that its `probe` conflicts are never opened. In the copy of each
+// file that holds one, that directive's name is replaced by one that exists nowhere, with every other byte
+// kept: UTF-16 is re-encoded as UTF-16, anything else is edited byte for byte. If the probe then compiles
+// cleanly, MetaEditor skipped them; a directive it does open fails with "not found". Every edited file is
+// read again with the same scanner (`directives`) before anything is written: a directive still naming a
+// conflict's file means it wasn't marked. Returns { marks ([{ mark, conflict }]), restore() (puts the copied
+// files back) } or { error } (a directive that couldn't be marked: nothing is changed).
+function mqlProbe(copy, src) {
+  const tag = `__gpt_probe_${crypto.randomBytes(4).toString('hex')}`, edits = new Map(), marks = [], done = new Set();
+  const esc = s => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const sp = '[ \\t]*(?:\\\\\\r?\\n[ \\t]*)*', gap = '(?:[ \\t]|\\\\\\r?\\n)+'; // blanks and "\" line continuations
+  const typeOf = l => (l.kind === 'q' || l.kind === 'a' ? 'include' : 'resource'), keyOf = (type, quoted, raw) => `${type}|${quoted}|${raw}`;
+  for (const c of copy.conflicts.filter(x => x.probe)) {
+    const l = c.link, to = copy.copyOf.get(l.from.toLowerCase()), key = keyOf(typeOf(l), l.kind !== 'a', l.raw);
+    let ed = edits.get(to);
+    if (!ed) {
+      const orig = src.entries.find(e => e.f.toLowerCase() === l.from.toLowerCase()).buf, utf16 = orig[0] === 0xff && orig[1] === 0xfe;
+      edits.set(to, ed = { orig, utf16, text: utf16 ? orig.slice(2).toString('utf16le') : orig.toString('latin1'), keys: new Set(), what: new Map() });
+    }
+    if (done.has(`${to.toLowerCase()}|${key}`)) continue; // (one replacement marks every directive in that file naming it)
+    done.add(`${to.toLowerCase()}|${key}`);
+    const mark = `${tag}_${marks.length}${typeOf(l) === 'include' ? '.mqh' : '.bin'}`;
+    const raw = ed.utf16 ? l.raw : Buffer.from(l.raw, 'utf8').toString('latin1');
+    const [open, close] = l.kind === 'a' ? ['<', '>'] : ['"', '"'];
+    const re = new RegExp(`(#${sp}${typeOf(l) === 'include' ? 'include' : `(?:resource|property${gap}icon)`}${sp}${open})${esc(raw)}(${close})`, 'g');
+    let n = 0;
+    ed.text = ed.text.replace(re, (m, a, b) => { n++; return a + mark + b; });
+    if (!n) return { error: `${c.what} could not be marked for a probe compile` };
+    ed.keys.add(key); ed.what.set(key, c.what);
+    marks.push({ mark, conflict: c });
+  }
+  const encoded = new Map();
+  for (const [to, ed] of edits) {
+    const buf = ed.utf16 ? Buffer.concat([Buffer.from([0xff, 0xfe]), Buffer.from(ed.text, 'utf16le')]) : Buffer.from(ed.text, 'latin1');
+    const left = directives(sourceText(buf)).find(d => ed.keys.has(keyOf(d.type, d.quoted, d.raw)));
+    if (left) return { error: `${ed.what.get(keyOf(left.type, left.quoted, left.raw))} could not be marked for a probe compile` };
+    encoded.set(to, buf);
+  }
+  for (const [to, buf] of encoded) fs.writeFileSync(to, buf);
+  return { marks, restore() { for (const [to, ed] of edits) fs.writeFileSync(to, ed.orig); } };
 }
 
 // Copies left behind by a compile that was killed (a compile is stopped after 5 minutes): removed once
@@ -259,4 +312,4 @@ function fromCopy(text, copy) {
   return pairs.length ? text.replace(re, m => to.get(m.toLowerCase())) : text;
 }
 
-module.exports = { JOB_RUNNER, CONTAINMENT_WARNING, UNCONTAINED_NOTE, runTracked, evidence, metaeditorRoot, mqlSources, mqlCopy, fromCopy, sweepCopies };
+module.exports = { JOB_RUNNER, CONTAINMENT_WARNING, UNCONTAINED_NOTE, runTracked, evidence, metaeditorRoot, directives, mqlSources, mqlCopy, mqlProbe, fromCopy, sweepCopies };
