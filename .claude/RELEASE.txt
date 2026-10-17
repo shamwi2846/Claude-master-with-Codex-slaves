@@ -1,18 +1,18 @@
-Released 2026-10-17T00:02:29.291Z
+Released 2026-10-17T11:50:45.258Z
 Source: C:/Users/Shari/.claude
-Checks: OK: 354 passed, 0 failed, 0 skipped, 43 scripts, 246s
+Checks: OK: 387 passed, 0 failed, 0 skipped, 44 scripts, 257s
 
 e92205d67edbdec6  .claude/CLAUDE.md
-4548bdf3a97d6724  .claude/settings.json
+0949ab0f422cfbdb  .claude/settings.json
 6313b76c34691c81  .claude/gpt/config.json
 1404114f1051c8ff  .claude/gpt/gpt.js
-14bac533029c9bff  .claude/gpt/gate.js
-b5490a7010ba9116  .claude/gpt/lib.js
-20643d0ee374404c  .claude/gpt/REFERENCE.md
+1fe9ef95d7a034a7  .claude/gpt/gate.js
+1d630757a04d2dd1  .claude/gpt/lib.js
+c24baf0fb03f5563  .claude/gpt/REFERENCE.md
 ac68ac9edfb7e1c2  .claude/gpt/bridge/codex.js
-5b5e0f77cd4cddfe  .claude/gpt/bridge/commands.js
+bd3a38c18c560102  .claude/gpt/bridge/commands.js
 1fbfbfe10abbce2a  .claude/gpt/bridge/ctx.js
-a1df60cb4b793c96  .claude/gpt/bridge/evidence.js
+6df7a449fb04f833  .claude/gpt/bridge/evidence.js
 070bd62820db89bb  .claude/gpt/bridge/prompts.js
 5e1735bf97500b94  .claude/gpt/bridge/review.js
 32fdb7189fa852cf  .claude/gpt/bridge/write.js
@@ -55,6 +55,7 @@ a12de5b0c976b8a2  .claude/gpt/tests/t_r27.js
 06703d4cd0538734  .claude/gpt/tests/t_r28.js
 006ef4d6e17faf5e  .claude/gpt/tests/t_r29.js
 157312e3571d2fb0  .claude/gpt/tests/t_r3.js
+f595c82a70447412  .claude/gpt/tests/t_r30.js
 7693baddca2c3554  .claude/gpt/tests/t_r4.js
 f3852b0f5c2a358b  .claude/gpt/tests/t_r5.js
 9a462377d78234aa  .claude/gpt/tests/t_r6.js

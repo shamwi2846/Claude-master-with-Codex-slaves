@@ -646,6 +646,8 @@ const handlers = {
       // Edits that were reverted (content equals the pre-edit baseline again) are no change at all.
       // (Only the pending change is cleared; open findings stay until resolved or accepted.)
       for (const [f, c] of L.pending(s)) {
+        // A file first seen while still being written that turned out to be a Strategy Tester report: output.
+        if (/\.html?$/i.test(f) && L.isTesterReport(f)) { c.reviewedAt = Math.max(c.reviewedAt || 0, c.at); continue; }
         // Changed outside Edit/Write: compare only if the saved baseline predates ALL pending changes.
         if (c.shellTouched && !c.basePre) continue;
         const base = L.baselineOf(root, f);

@@ -1,6 +1,8 @@
 // Build/test/compile output for reviews: commands run inside a Windows Job Object (the whole process tree
 // is stopped at a timeout), captured output, and the MQL source fingerprint used by mql5-compile.
+const crypto = require('crypto');
 const fs = require('fs');
+const os = require('os');
 const path = require('path');
 const { spawn } = require('child_process');
 const L = require('../lib');
@@ -120,31 +122,141 @@ async function evidence() {
   return out ? `\nEVIDENCE (build/test/compile output — treat failures as facts, check whether the change caused them):\n\`\`\`\n${out.trim()}\n\`\`\`\n` : '';
 }
 
-// The source set an MQL4/5 file compiles from: the file plus its #include files, followed recursively
-// ("x.mqh" next to the including file, then <x.mqh> in the terminal's MQL5|MQL4/Include folder).
-// Returns { files, hash (one sha256 over every path + content), newest (latest change), missing,
-// truncated (stopped at 500 files: the fingerprint doesn't cover the rest) }.
-function mqlSources(main) {
-  let up = path.dirname(main), inc = null;
-  for (; ;) { if (/^mql[45]$/i.test(path.basename(up))) { inc = path.join(up, 'Include'); break; } const p = path.dirname(up); if (p === up) break; up = p; }
-  const seen = new Map(), missing = [], queue = [path.resolve(main)];
-  while (queue.length && seen.size < 500) {
-    const f = queue.shift();
+// MetaEditor's own MQL5|MQL4 folder (for `file`'s language): <library> includes the folder a source is in
+// doesn't have come from here. A terminal's data folder is %APPDATA%\MetaQuotes\Terminal\<MD5 of its
+// upper-cased install path as UTF-16LE>; a portable install keeps it in the install folder. null if neither.
+function metaeditorRoot(metaeditorPath, file) {
+  if (!metaeditorPath) return null;
+  const name = /\.mq4$/i.test(file || '') ? 'MQL4' : 'MQL5', install = path.dirname(path.resolve(metaeditorPath));
+  const id = crypto.createHash('md5').update(Buffer.from(install.toUpperCase(), 'utf16le')).digest('hex').toUpperCase();
+  return [process.env.APPDATA && path.join(process.env.APPDATA, 'MetaQuotes', 'Terminal', id, name), path.join(install, name)]
+    .find(d => d && fs.existsSync(path.join(d, 'Include'))) || null;
+}
+
+// The source set an MQL4/5 file compiles from: the file, its #include files, followed recursively
+// ("x.mqh" next to the including file or the main file, then <x.mqh> in the Include folder of the MQL5|MQL4
+// folder the file is in, then of `libRoot`, MetaEditor's own), and the files the compiler embeds (#resource,
+// #property icon: "\\x" from those MQL5|MQL4 folders, else next to the file). Returns { files, hash (one
+// sha256 over every path + content), newest (latest change), missing, truncated (stopped at 2000 files: the
+// fingerprint doesn't cover the rest), root (the enclosing MQL5|MQL4 folder, or null), libRoot, entries
+// ([{ f, buf }]: exactly the content fingerprinted), links ([{ from, kind, name, to }]: every directive and
+// the file it resolved to, null if none; kind q "x", a <x>, r resource next to the file, rr "\\x") }.
+function mqlSources(main, libRoot = null, cap = 2000) {
+  main = path.resolve(main);
+  let up = path.dirname(main), root = null;
+  for (; ;) { if (/^mql[45]$/i.test(path.basename(up))) { root = up; break; } const p = path.dirname(up); if (p === up) break; up = p; }
+  const roots = [root, libRoot].filter(Boolean), incs = roots.map(r => path.join(r, 'Include'));
+  const seen = new Map(), missing = [], links = [], queue = [[main, true]];
+  while (queue.length && seen.size < cap) {
+    const [f, source] = queue.shift();
     if (seen.has(f.toLowerCase())) continue;
     let buf; try { buf = fs.readFileSync(f); } catch { missing.push(f); continue; }
     seen.set(f.toLowerCase(), { f, buf, m: fs.statSync(f).mtimeMs });
-    const text = (buf[0] === 0xff && buf[1] === 0xfe) ? buf.slice(2).toString('utf16le') : buf.toString('utf8');
-    for (const [, q, a] of text.matchAll(/^\s*#include\s+(?:"([^"]+)"|<([^>]+)>)/gm)) {
-      const name = (q || a).replace(/[\\/]+/g, path.sep);
-      const local = path.resolve(path.dirname(f), name), lib = inc && path.resolve(inc, name);
-      queue.push(q && fs.existsSync(local) ? local : lib && fs.existsSync(lib) ? lib : q ? local : (lib || local));
+    if (!source) continue; // an embedded file (image, sound, model): not parsed
+    // (a directive continued with "\" at the end of the line is one line; a UTF-8 BOM is not part of line 1)
+    const text = ((buf[0] === 0xff && buf[1] === 0xfe) ? buf.slice(2).toString('utf16le') : buf.toString('utf8')).replace(/^﻿/, '').replace(/\\\r?\n/g, ' ');
+    for (const [, q, a] of text.matchAll(/^[ \t]*#[ \t]*include[ \t]*(?:"([^"\r\n]+)"|<([^>\r\n]+)>)/gm)) {
+      const name = (q || a).replace(/[\\/]+/g, path.sep), here = path.resolve(path.dirname(f), name);
+      const local = q && [here, path.resolve(path.dirname(main), name)].find(p => fs.existsSync(p));
+      const lib = incs.map(d => path.resolve(d, name)).find(p => fs.existsSync(p));
+      links.push({ from: f, kind: q ? 'q' : 'a', name, to: local || lib || null });
+      queue.push([local || lib || (q || !incs.length ? here : path.resolve(incs[0], name)), true]);
+    }
+    for (const [, r] of text.matchAll(/^[ \t]*#[ \t]*(?:resource|property[ \t]+icon)[ \t]*"([^"\r\n]+)"/gm)) {
+      const name = r.replace(/\\\\/g, '\\').replace(/[\\/]+/g, path.sep), rooted = /^[\\/]/.test(name);
+      const found = rooted ? roots.map(d => path.join(d, name)).find(p => fs.existsSync(p)) : [path.resolve(path.dirname(f), name)].find(p => fs.existsSync(p));
+      links.push({ from: f, kind: rooted ? 'rr' : 'r', name: rooted ? name.slice(1) : name, to: found || null });
+      const abs = found || (rooted ? roots[0] && path.join(roots[0], name) : path.resolve(path.dirname(f), name));
+      if (abs) queue.push([abs, false]); else missing.push(r);
     }
   }
   const all = [...seen.values()].sort((x, y) => (x.f < y.f ? -1 : 1));
-  const h = require('crypto').createHash('sha256');
+  const h = crypto.createHash('sha256');
   for (const x of all) h.update(x.f.toLowerCase()).update(x.buf);
   const newest = all.length ? new Date(Math.max(...all.map(x => x.m))).toISOString() : 'n/a';
-  return { files: all.length, hash: h.digest('hex').slice(0, 12), newest, missing, truncated: queue.length > 0 };
+  return { files: all.length, hash: h.digest('hex').slice(0, 12), newest, missing, truncated: queue.length > 0, root, libRoot, entries: all.map(({ f, buf }) => ({ f, buf })), links };
 }
 
-module.exports = { JOB_RUNNER, CONTAINMENT_WARNING, UNCONTAINED_NOTE, runTracked, evidence, mqlSources };
+// A private copy of a source set (mqlSources) to compile, so MetaEditor's output (.ex5, log) never lands in
+// the project, where a running tester or a compile receipt may be using it. The copy is self-contained, for
+// `/include:<includeRoot>`: an MQL5|MQL4 folder holding the project's files in their layout (quoted includes
+// and resources resolve as in place) and the library files it uses from MetaEditor's own folder. (Without
+// /include, MetaEditor picks up the Include folder of an MQL5 folder a file is in only on some paths — it
+// depends on the path's length — so a copy can't rely on that.) The project's files: the enclosing MQL5|MQL4
+// folder's layout when there is one, else under <copy>/MQL5/Experts/<project folder>. Returns { dir (remove
+// it afterwards), main (the copy of `main`), includeRoot (null: no MQL5 folder known, MetaEditor's default),
+// paths ([copy, original] pairs, files and folders) } or { error }. Refused (nothing written) when two files
+// would share a place, or when any #include/#resource would find a different file in the copy than in the
+// project (e.g. a quoted include that is missing in the project but present in the merged copy).
+function mqlCopy(src, main) {
+  main = path.resolve(main);
+  const inside = (d, f) => { const r = path.relative(d, f); return !!r && !r.startsWith('..') && !path.isAbsolute(r); };
+  const same = (a, b) => !!a && !!b && path.relative(a, b) === '';
+  const lib = src.libRoot && !same(src.libRoot, src.root) ? src.libRoot : null;
+  const isLib = e => !!lib && inside(lib, e.f) && !(src.root && inside(src.root, e.f));
+  const project = src.entries.filter(e => !isLib(e));
+  let base = src.root || path.dirname(main);
+  while (!project.every(e => inside(base, e.f))) {
+    const p = path.dirname(base);
+    if (p === base) return { error: 'the source files are on different drives' };
+    base = p;
+  }
+  const dir = path.join(os.tmpdir(), `gpt-compile-${process.pid}-${crypto.randomBytes(4).toString('hex')}`);
+  const kind = /\.mq4$/i.test(main) ? 'MQL4' : 'MQL5', name = path.basename(base) || 'src';
+  let mirror, includeRoot = null;
+  if (src.root) { mirror = path.join(dir, name); includeRoot = path.join(mirror, path.relative(base, src.root)); }
+  else if (lib) { includeRoot = path.join(dir, kind); mirror = path.join(includeRoot, 'Experts', name); }
+  else mirror = path.join(dir, name);
+  // where each file goes
+  const copyOf = new Map(), placed = new Map();
+  for (const e of src.entries) {
+    const to = isLib(e) ? path.join(includeRoot, path.relative(lib, e.f)) : path.join(mirror, path.relative(base, e.f));
+    if (placed.has(to.toLowerCase())) return { error: `${e.f} and ${placed.get(to.toLowerCase())} would share one place in the copy` };
+    placed.set(to.toLowerCase(), e.f); copyOf.set(e.f.toLowerCase(), to);
+  }
+  const mainCopy = copyOf.get(main.toLowerCase());
+  // every directive must find the same file in the copy (the same search order as mqlSources, with the
+  // copy's include folder standing for both MQL5 folders); MetaEditor's default folder isn't in the copy
+  for (const l of src.links || []) {
+    if (!includeRoot && (l.kind === 'a' || l.kind === 'rr')) continue;
+    const from = copyOf.get(l.from.toLowerCase()), inc = includeRoot && path.join(includeRoot, 'Include', l.name);
+    const cands = l.kind === 'q' ? [path.join(path.dirname(from), l.name), path.join(path.dirname(mainCopy), l.name), inc]
+      : l.kind === 'a' ? [inc] : l.kind === 'r' ? [path.join(path.dirname(from), l.name)] : [path.join(includeRoot, l.name)];
+    const got = cands.find(c => c && placed.has(c.toLowerCase())) || null, want = l.to ? copyOf.get(l.to.toLowerCase()) || null : null;
+    if ((got || '').toLowerCase() !== (want || '').toLowerCase()) {
+      const what = `${l.kind === 'q' ? `#include "${l.name}"` : l.kind === 'a' ? `#include <${l.name}>` : `#resource "${l.name}"`} in ${l.from}`;
+      // (directives are read without the preprocessor: one in an inactive #ifdef branch counts too)
+      return { error: `in the copy, ${what} would find ${got ? placed.get(got.toLowerCase()) : 'nothing'} instead of ${l.to || 'nothing'} (even if it sits in an inactive #ifdef branch)` };
+    }
+  }
+  const paths = [[mirror, base]].concat(includeRoot && lib ? [[includeRoot, src.root ? src.root : lib]] : []);
+  try {
+    for (const e of src.entries) {
+      const to = copyOf.get(e.f.toLowerCase());
+      paths.push([to, e.f]);
+      fs.mkdirSync(path.dirname(to), { recursive: true });
+      fs.writeFileSync(to, e.buf);
+    }
+  } catch (e) { fs.rmSync(dir, { recursive: true, force: true }); return { error: `could not copy the sources (${e.message})` }; }
+  return { dir, main: mainCopy, includeRoot, paths };
+}
+
+// Copies left behind by a compile that was killed (a compile is stopped after 5 minutes): removed once
+// they are an hour old. (Real folders only: a link is never followed.)
+function sweepCopies(maxAgeMs = 3600000) {
+  let names = []; try { names = fs.readdirSync(os.tmpdir()); } catch { return; }
+  for (const n of names) {
+    if (!n.startsWith('gpt-compile-')) continue;
+    const p = path.join(os.tmpdir(), n);
+    try { const st = fs.lstatSync(p); if (st.isDirectory() && Date.now() - st.mtimeMs > maxAgeMs) fs.rmSync(p, { recursive: true, force: true }); } catch {}
+  }
+}
+
+// `text` with the copy's paths (mqlCopy) replaced by the project's.
+function fromCopy(text, copy) {
+  const pairs = copy.paths.slice().sort((a, b) => b[0].length - a[0].length), to = new Map(pairs.map(([c, o]) => [c.toLowerCase(), o]));
+  const re = new RegExp(pairs.map(([c]) => c.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|'), 'gi');
+  return pairs.length ? text.replace(re, m => to.get(m.toLowerCase())) : text;
+}
+
+module.exports = { JOB_RUNNER, CONTAINMENT_WARNING, UNCONTAINED_NOTE, runTracked, evidence, metaeditorRoot, mqlSources, mqlCopy, fromCopy, sweepCopies };
