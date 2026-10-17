@@ -295,7 +295,9 @@ const commands = {
     try { ({ r, text } = await compile()); } finally { removeCopy(); process.removeListener('exit', removeCopy); }
     const after = E.mqlSources(file, libRoot);
     // compiler messages name the copy: show the project's paths
-    const lines = text.split(/\r?\n/).filter(l => /error|warning|result/i.test(l)).map(l => E.fromCopy(l, copy));
+    // (selected first — a path may contain "error" — then mapped in one pass)
+    const selected = text.split(/\r?\n/).filter(l => /error|warning|result/i.test(l));
+    const lines = selected.length ? E.fromCopy(selected.join('\n'), copy).split('\n') : [];
     console.log(`compiled: ${file} (from a temporary copy — the project's .ex5 is not updated; ${before.files} source file(s), sources sha256 ${before.hash}, newest change ${before.newest})` +
       (after.hash !== before.hash ? ` — SOURCES CHANGED during the compile (now ${after.hash}); this result is for the earlier version` : '') +
       (before.missing.length ? `; includes not found: ${before.missing.slice(0, 5).join(', ')}` : '') + probeNote +

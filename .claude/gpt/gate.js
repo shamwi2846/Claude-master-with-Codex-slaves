@@ -642,12 +642,15 @@ const handlers = {
     const s0 = L.readState(root);
     if (s0._unreadable) return out({ systemMessage: `GPT review tracking is OFF for ${path.basename(root)}: ${L.statePath(root)} is unreadable (${s0._unreadable}), so unreviewed changes are unknown. Move that file aside (tracking restarts) and review your changes with ${GPT} review --files "...".` });
     absorbTurnChanges(root, cfg, { sid: inp.session_id });
+    // Pending files first seen while still being written that turned out to be Strategy Tester reports
+    // (output) — judged before the state lock (a deleted one may need a git lookup), so each is cleared only
+    // if its record is still the version judged (not a newer change another session recorded meanwhile).
+    const reports = new Map(L.pending(L.readState(root)).filter(([f]) => /\.html?$/i.test(f) && L.isTesterReport(f)).map(([f, c]) => [f.toLowerCase(), c.at]));
     const res = L.updateState(root, s => {
       // Edits that were reverted (content equals the pre-edit baseline again) are no change at all.
       // (Only the pending change is cleared; open findings stay until resolved or accepted.)
       for (const [f, c] of L.pending(s)) {
-        // A file first seen while still being written that turned out to be a Strategy Tester report: output.
-        if (/\.html?$/i.test(f) && L.isTesterReport(f)) { c.reviewedAt = Math.max(c.reviewedAt || 0, c.at); continue; }
+        if (reports.get(f.toLowerCase()) === c.at) { c.reviewedAt = Math.max(c.reviewedAt || 0, c.at); continue; }
         // Changed outside Edit/Write: compare only if the saved baseline predates ALL pending changes.
         if (c.shellTouched && !c.basePre) continue;
         const base = L.baselineOf(root, f);

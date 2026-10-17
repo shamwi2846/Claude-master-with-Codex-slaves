@@ -1,16 +1,16 @@
-Released 2026-10-17T12:27:02.689Z
+Released 2026-10-17T12:39:04.669Z
 Source: C:/Users/Shari/.claude
-Checks: OK: 395 passed, 0 failed, 0 skipped, 44 scripts, 262s
+Checks: OK: 395 passed, 0 failed, 0 skipped, 44 scripts, 267s
 
 e92205d67edbdec6  .claude/CLAUDE.md
 0949ab0f422cfbdb  .claude/settings.json
 6313b76c34691c81  .claude/gpt/config.json
 1404114f1051c8ff  .claude/gpt/gpt.js
-1fe9ef95d7a034a7  .claude/gpt/gate.js
+542066d447abdb41  .claude/gpt/gate.js
 1d630757a04d2dd1  .claude/gpt/lib.js
 c7e831c61531b58a  .claude/gpt/REFERENCE.md
 ac68ac9edfb7e1c2  .claude/gpt/bridge/codex.js
-619c58333cbaf6aa  .claude/gpt/bridge/commands.js
+1de20f8e1a2c490d  .claude/gpt/bridge/commands.js
 1fbfbfe10abbce2a  .claude/gpt/bridge/ctx.js
 203e8e6952acfe09  .claude/gpt/bridge/evidence.js
 070bd62820db89bb  .claude/gpt/bridge/prompts.js
